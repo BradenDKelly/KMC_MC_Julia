@@ -96,3 +96,23 @@ end
     # Density should equal N/L^3
     @test ρ_after ≈ st.N / (st.L * st.L * st.L) rtol=1e-10
 end
+
+@testset "pressure sanity check" begin
+    p, st = MolSim.MC.init_fcc(N=108, ρ=0.8, T=1.0, rc=2.5, max_disp=0.1, seed=42)
+    T = 1.0 / p.β
+    P = MolSim.MC.pressure(st, p, T)
+    @test isfinite(P)
+end
+
+@testset "widom_deltaU allocation and sanity" begin
+    p, st = MolSim.MC.init_fcc(N=108, ρ=0.8, T=1.0, rc=2.5, max_disp=0.1, seed=42)
+    
+    # Check zero allocation
+    allocated = @allocated MolSim.MC.widom_deltaU(st, p)
+    @test allocated == 0
+    
+    # Check returns finite Float64
+    ΔU = MolSim.MC.widom_deltaU(st, p)
+    @test isfinite(ΔU)
+    @test ΔU isa Float64
+end

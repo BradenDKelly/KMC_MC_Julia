@@ -13,6 +13,9 @@ println("@allocated mc_trial! = $allocated_trial")
 allocated_sweep = @allocated MolSim.MC.sweep!(st, p)
 println("@allocated sweep! = $allocated_sweep")
 
+allocated_widom = @allocated MolSim.MC.widom_deltaU(st, p)
+println("@allocated widom_deltaU = $allocated_widom")
+
 # Code warntype check
 println("\n@code_warntype mc_trial!:")
 using InteractiveUtils
