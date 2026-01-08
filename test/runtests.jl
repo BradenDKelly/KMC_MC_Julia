@@ -116,3 +116,81 @@ end
     @test isfinite(ΔU)
     @test ΔU isa Float64
 end
+
+@testset "long-range corrections" begin
+    N = 108
+    ρ = 0.8
+    T = 1.0
+    rc = 2.5
+    
+    # Initialize without LRC
+    p_no_lrc, st = MolSim.MC.init_fcc(N=N, ρ=ρ, T=T, rc=rc, max_disp=0.1, seed=42, use_lrc=false)
+    @test p_no_lrc.use_lrc == false
+    @test p_no_lrc.lrc_u_per_particle == 0.0
+    @test p_no_lrc.lrc_p == 0.0
+    
+    # Initialize with LRC
+    p_lrc, st_lrc = MolSim.MC.init_fcc(N=N, ρ=ρ, T=T, rc=rc, max_disp=0.1, seed=42, use_lrc=true)
+    @test p_lrc.use_lrc == true
+    
+    # Compute energy and pressure without LRC
+    E_no_lrc = MolSim.MC.total_energy(st, p_no_lrc)
+    P_no_lrc = MolSim.MC.pressure(st, p_no_lrc, T)
+    
+    # Compute energy and pressure with LRC
+    E_lrc = MolSim.MC.total_energy(st_lrc, p_lrc)
+    P_lrc = MolSim.MC.pressure(st_lrc, p_lrc, T)
+    
+    # Check that LRC adds exactly the correction amount
+    expected_E_correction = N * p_lrc.lrc_u_per_particle
+    @test abs((E_lrc - E_no_lrc) - expected_E_correction) < 1e-10
+    
+    expected_P_correction = p_lrc.lrc_p
+    @test abs((P_lrc - P_no_lrc) - expected_P_correction) < 1e-10
+    
+    # Check that corrections are computed correctly (analytic formula)
+    # U_tail/N = (8πρ/3) * [1/(3*rc^9) - 1/rc^3]
+    rc3 = rc * rc * rc
+    rc9 = rc3 * rc3 * rc3
+    inv_rc3 = 1.0 / rc3
+    inv_rc9 = 1.0 / rc9
+    expected_u_per_particle = (8.0 * π * ρ / 3.0) * (inv_rc9 / 3.0 - inv_rc3)
+    @test abs(p_lrc.lrc_u_per_particle - expected_u_per_particle) < 1e-10
+    
+    # P_tail = (16πρ²/3) * [2/(3*rc^9) - 1/rc^3]
+    ρ2 = ρ * ρ
+    expected_p_correction = (16.0 * π * ρ2 / 3.0) * (2.0 * inv_rc9 / 3.0 - inv_rc3)
+    @test abs(p_lrc.lrc_p - expected_p_correction) < 1e-10
+end
+
+@testset "allocation truth for LRC" begin
+    # Initialize with LRC enabled
+    p_lrc, st_lrc = MolSim.MC.init_fcc(N=864, ρ=0.8, T=1.0, rc=2.5, seed=42, use_lrc=true)
+    T = 1.0 / p_lrc.β
+    
+    # Warm up
+    MolSim.MC.total_energy(st_lrc, p_lrc)
+    MolSim.MC.pressure(st_lrc, p_lrc, T)
+    
+    # Measure allocations with LRC
+    alloc_total_energy_lrc = @allocated MolSim.MC.total_energy(st_lrc, p_lrc)
+    alloc_pressure_lrc = @allocated MolSim.MC.pressure(st_lrc, p_lrc, T)
+    
+    @test alloc_total_energy_lrc <= 64
+    @test alloc_pressure_lrc <= 64
+    
+    # Initialize with LRC disabled
+    p_no_lrc, st_no_lrc = MolSim.MC.init_fcc(N=864, ρ=0.8, T=1.0, rc=2.5, seed=42, use_lrc=false)
+    T_no_lrc = 1.0 / p_no_lrc.β
+    
+    # Warm up
+    MolSim.MC.total_energy(st_no_lrc, p_no_lrc)
+    MolSim.MC.pressure(st_no_lrc, p_no_lrc, T_no_lrc)
+    
+    # Measure allocations without LRC
+    alloc_total_energy_no_lrc = @allocated MolSim.MC.total_energy(st_no_lrc, p_no_lrc)
+    alloc_pressure_no_lrc = @allocated MolSim.MC.pressure(st_no_lrc, p_no_lrc, T_no_lrc)
+    
+    @test alloc_total_energy_no_lrc <= 64
+    @test alloc_pressure_no_lrc <= 64
+end

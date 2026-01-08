@@ -8,6 +8,7 @@ module MolSim
 module MC
     include("MC/PBC.jl")
     include("MC/NeighborList.jl")
+    include("MC/LJLongRange.jl")
     include("MC/LJMC.jl")
     include("MC/BlockAveraging.jl")
     include("MC/Observables.jl")

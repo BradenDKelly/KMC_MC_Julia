@@ -3,8 +3,13 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 push!(LOAD_PATH, joinpath(@__DIR__, "..", "src"))
 using MolSim
 
-p, st = MolSim.MC.init_fcc(N=864, ρ=0.8, T=1.0, rc=2.5, max_disp=0.1, seed=1234)
+# Enable long-range corrections
+use_lrc = true
+
+p, st = MolSim.MC.init_fcc(N=864, ρ=0.8, T=1.0, rc=2.5, max_disp=0.1, seed=1234, use_lrc=use_lrc)
 T = 1.0 / p.β
+
+println("LJ: rc=$(p.rc), shifted=false, LRC=$(p.use_lrc)")
 
 # Warmup sweeps
 println("Warmup: 100 sweeps")
@@ -53,6 +58,16 @@ mu_ex_se = MolSim.MC.stderr(mu_ex_ba)
 
 println("\nResults:")
 println("  Acceptance ratio: $(round(avg_acc, digits=4))")
-println("  Energy per particle: $(round(u_mean, digits=6)) ± $(round(u_se, digits=6))")
-println("  Pressure: $(round(p_mean, digits=6)) ± $(round(p_se, digits=6))")
+if p.use_lrc
+    # Compute sampled values (without LRC)
+    u_sampled_mean = u_mean - p.lrc_u_per_particle
+    p_sampled_mean = p_mean - p.lrc_p
+    println("  Energy per particle (sampled): $(round(u_sampled_mean, digits=6)) ± $(round(u_se, digits=6))")
+    println("  Energy per particle (corrected): $(round(u_mean, digits=6)) ± $(round(u_se, digits=6))")
+    println("  Pressure (sampled): $(round(p_sampled_mean, digits=6)) ± $(round(p_se, digits=6))")
+    println("  Pressure (corrected): $(round(p_mean, digits=6)) ± $(round(p_se, digits=6))")
+else
+    println("  Energy per particle: $(round(u_mean, digits=6)) ± $(round(u_se, digits=6))")
+    println("  Pressure: $(round(p_mean, digits=6)) ± $(round(p_se, digits=6))")
+end
 println("  Excess chemical potential: $(round(mu_ex_mean, digits=6)) ± $(round(mu_ex_se, digits=6))")

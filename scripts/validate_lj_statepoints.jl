@@ -6,6 +6,8 @@ using Printf
 
 # Flag to use plain Widom (false) or cavity-biased (true, default for dense)
 use_cavity_biased = true
+# Flag to enable long-range corrections
+use_lrc = true
 
 # State points to test
 state_points = [
@@ -32,7 +34,12 @@ for sp in state_points
     ρ = sp.ρ
     
     # Initialize
-    p, st = MolSim.MC.init_fcc(N=N, ρ=ρ, T=T, rc=rc, max_disp=max_disp, seed=42)
+    p, st = MolSim.MC.init_fcc(N=N, ρ=ρ, T=T, rc=rc, max_disp=max_disp, seed=42, use_lrc=use_lrc)
+    
+    # Print LJ parameters (once per state point)
+    if sp == state_points[1]
+        println("LJ: rc=$(rc), shifted=false, LRC=$(use_lrc)")
+    end
     
     # Warmup
     for i in 1:warmup_sweeps

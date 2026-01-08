@@ -17,6 +17,9 @@ struct LJParams
     rc2::Float64
     β::Float64
     max_disp::Float64
+    use_lrc::Bool
+    lrc_u_per_particle::Float64
+    lrc_p::Float64
 end
 
 """
@@ -53,13 +56,14 @@ end
 
 """
     init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
-             max_disp::Float64=0.1, seed::Int=1234)
+             max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false)
 
 Initialize FCC lattice at density ρ and return (params::LJParams, st::LJState).
 Requires N divisible by 4 and N/4 to be a perfect cube.
+If use_lrc=true, precomputes long-range tail corrections for energy and pressure.
 """
 function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
-                  max_disp::Float64=0.1, seed::Int=1234)
+                  max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false)
     if N % 4 != 0
         throw(ArgumentError("N must be divisible by 4 for FCC lattice, got N=$N"))
     end
@@ -126,8 +130,16 @@ function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5
         pos[3, i] = scratch[3]
     end
     
+    # Compute long-range corrections if requested
+    lrc_u_per_particle = 0.0
+    lrc_p = 0.0
+    if use_lrc
+        lrc_u_per_particle = compute_lrc_energy_per_particle(ρ, rc)
+        lrc_p = compute_lrc_pressure(ρ, rc)
+    end
+    
     # Create parameters
-    params = LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, max_disp)
+    params = LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, max_disp, use_lrc, lrc_u_per_particle, lrc_p)
     
     # Create cell list
     cl = CellList(N, L, rc)

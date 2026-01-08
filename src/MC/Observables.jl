@@ -72,6 +72,11 @@ function total_energy(st, p)::Float64
         end
     end
     
+    # Add long-range correction if enabled
+    if p.use_lrc
+        energy += st.N * p.lrc_u_per_particle
+    end
+    
     return energy
 end
 
@@ -163,5 +168,12 @@ function pressure(st, p, T::Float64)::Float64
     V = L * L * L
     ρ = N / V
     W = total_virial(st, p)
-    return ρ * T + W / (3.0 * V)
+    P_sampled = ρ * T + W / (3.0 * V)
+    
+    # Add long-range correction if enabled
+    if p.use_lrc
+        P_sampled += p.lrc_p
+    end
+    
+    return P_sampled
 end
