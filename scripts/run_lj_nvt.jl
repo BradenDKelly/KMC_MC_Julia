@@ -23,7 +23,9 @@ end
 avg_acc = total_acc / 100.0
 E_total = MolSim.MC.total_energy(st, p)
 E_per_particle = E_total / st.N
+P = MolSim.MC.pressure(st, p)
 
 println("\nResults:")
 println("  Acceptance ratio: $(round(avg_acc, digits=4))")
 println("  Energy per particle: $(round(E_per_particle, digits=6))")
+println("  Pressure: $(round(P, digits=6))")

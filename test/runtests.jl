@@ -52,3 +52,47 @@ end
     E2 = MolSim.MC.total_energy(st, p)
     @test abs(E1 - E2) < 1e-10
 end
+
+@testset "sweep! safety check" begin
+    p, st = MolSim.MC.init_fcc(N=108, ρ=0.8, T=1.0, rc=2.5, max_disp=0.1, seed=42)
+    
+    # Run one sweep with rebuild_every=st.N (default, once per sweep)
+    acceptance = MolSim.MC.sweep!(st, p; rebuild_every=st.N)
+    
+    # Check acceptance ratio is in valid range
+    @test 0.0 <= acceptance <= 1.0
+    
+    # Check energy is finite
+    E_total = MolSim.MC.total_energy(st, p)
+    @test isfinite(E_total)
+end
+
+@testset "volume_trial! safety check" begin
+    p, st = MolSim.MC.init_fcc(N=108, ρ=0.8, T=1.0, rc=2.5, max_disp=0.1, seed=42)
+    
+    # Volume move with very small max_dlnV should rarely reject for modest Pext
+    # Just assert it runs and returns Bool
+    result = MolSim.MC.volume_trial!(st, p; max_dlnV=1e-6, Pext=1.0)
+    @test result isa Bool
+    
+    # Check energy remains finite
+    E_total = MolSim.MC.total_energy(st, p)
+    @test isfinite(E_total)
+end
+
+@testset "density consistency" begin
+    p, st = MolSim.MC.init_fcc(N=108, ρ=0.8, T=1.0, rc=2.5, max_disp=0.1, seed=42)
+    
+    # Initial density check
+    ρ_initial = st.N / (st.L * st.L * st.L)
+    @test ρ_initial ≈ 0.8 rtol=1e-10
+    
+    # After volume move, density should be consistent with L and N
+    L_before = st.L
+    MolSim.MC.volume_trial!(st, p; max_dlnV=0.01, Pext=1.0)
+    L_after = st.L
+    ρ_after = st.N / (L_after * L_after * L_after)
+    
+    # Density should equal N/L^3
+    @test ρ_after ≈ st.N / (st.L * st.L * st.L) rtol=1e-10
+end

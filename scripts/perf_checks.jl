@@ -7,8 +7,11 @@ using BenchmarkTools
 p, st = MolSim.MC.init_fcc(N=864, ρ=0.8, T=1.0, rc=2.5, max_disp=0.1, seed=1234)
 
 # Allocated bytes check
-allocated = @allocated MolSim.MC.mc_trial!(st, p)
-println("@allocated mc_trial! = $allocated")
+allocated_trial = @allocated MolSim.MC.mc_trial!(st, p)
+println("@allocated mc_trial! = $allocated_trial")
+
+allocated_sweep = @allocated MolSim.MC.sweep!(st, p)
+println("@allocated sweep! = $allocated_sweep")
 
 # Code warntype check
 println("\n@code_warntype mc_trial!:")
