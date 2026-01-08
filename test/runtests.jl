@@ -194,3 +194,6 @@ end
     @test alloc_total_energy_no_lrc <= 64
     @test alloc_pressure_no_lrc <= 64
 end
+
+# Include regression test
+include("regress_nvt.jl")
