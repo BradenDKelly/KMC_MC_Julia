@@ -1,8 +1,9 @@
 """
-Lennard-Jones NVT Metropolis Monte Carlo simulation (GPU-friendly SoA layout).
+Lennard-Jones NVT Metropolis Monte Carlo simulation.
 """
 
 using Random
+using StaticArrays
 
 """
     LJParams
@@ -10,448 +11,347 @@ using Random
 Parameters for Lennard-Jones Monte Carlo simulation.
 """
 struct LJParams
-    ϵ::Float64              # LJ energy parameter
-    σ::Float64              # LJ size parameter
-    rc::Float64             # Cutoff distance
-    rc_sq::Float64          # Cutoff squared
-    L::Float64              # Box length
-    N::Int                  # Number of particles
-    β::Float64              # Inverse temperature (1/(kB*T))
-    max_disp::Float64       # Maximum displacement for trial moves
-end
-
-"""
-    LJParams(ϵ, σ, rc, L, N, T, max_disp)
-
-Construct LJ parameters with temperature `T` (kB*T in units of ϵ).
-"""
-function LJParams(ϵ::Float64, σ::Float64, rc::Float64, L::Float64, N::Int, T::Float64, max_disp::Float64)
-    rc_sq = rc * rc
-    β = 1.0 / T
-    return LJParams(ϵ, σ, rc, rc_sq, L, N, β, max_disp)
+    σ::Float64
+    ϵ::Float64
+    rc::Float64
+    rc2::Float64
+    β::Float64
+    max_disp::Float64
 end
 
 """
     LJState
 
 State of the Lennard-Jones Monte Carlo simulation.
-Uses SoA (Structure of Arrays) layout for GPU compatibility.
 """
-mutable struct LJState{B <: AbstractBackend}
-    backend::B                 # Backend (CPU, GPU, etc.)
-    posx::Vector{Float64}      # X positions (SoA)
-    posy::Vector{Float64}      # Y positions (SoA)
-    posz::Vector{Float64}      # Z positions (SoA)
-    cell_bins::CellBins        # Array-based cell binning
-    rng::MersenneTwister       # Random number generator
-    energy::Float64            # Current total energy
+mutable struct LJState
+    N::Int
+    L::Float64
+    pos::Matrix{Float64}          # 3 x N, column = particle
+    rng::Xoshiro                  # concrete RNG type
+    cl::CellList                  # cell list
+    scratch_dr::MVector{3,Float64} # reused displacement vector
+    accepted::Int
+    attempted::Int
 end
 
 """
-    lj_potential(r_sq, params)
+    lj_potential(r2, p::LJParams)
 
-Compute Lennard-Jones potential: 4ϵ[(σ/r)^12 - (σ/r)^6] at squared distance `r_sq`.
-Returns 0.0 if r >= rc.
+Compute Lennard-Jones potential: 4ϵ[(σ/r)^12 - (σ/r)^6] at squared distance `r2`.
+Returns 0.0 if r2 >= rc2.
 """
-@inline function lj_potential(r_sq::Float64, params::LJParams)
-    if r_sq >= params.rc_sq || r_sq <= 0.0
+@inline function lj_potential(r2::Float64, p::LJParams)
+    if r2 >= p.rc2 || r2 <= 0.0
         return 0.0
     end
-    @fastmath begin
-        σ2_over_r2 = (params.σ * params.σ) / r_sq
-        σ6_over_r6 = σ2_over_r2 * σ2_over_r2 * σ2_over_r2
-        σ12_over_r12 = σ6_over_r6 * σ6_over_r6
-        return 4.0 * params.ϵ * (σ12_over_r12 - σ6_over_r6)
-    end
+    σ2_over_r2 = (p.σ * p.σ) / r2
+    σ6_over_r6 = σ2_over_r2 * σ2_over_r2 * σ2_over_r2
+    σ12_over_r12 = σ6_over_r6 * σ6_over_r6
+    return 4.0 * p.ϵ * (σ12_over_r12 - σ6_over_r6)
 end
 
 """
-    local_energy(backend, posx, posy, posz, particle_idx, cell_bins, params)
+    init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
+             max_disp::Float64=0.1, seed::Int=1234)
 
-Compute the local energy (energy of interactions) for particle `particle_idx`.
-Zero-allocation inner loop.
-Dispatches on backend type.
+Initialize FCC lattice at density ρ and return (params::LJParams, st::LJState).
+Requires N divisible by 4 and N/4 to be a perfect cube.
 """
-function local_energy(
-    backend::AbstractBackend,
-    posx::AbstractVector{<:Real},
-    posy::AbstractVector{<:Real},
-    posz::AbstractVector{<:Real},
-    particle_idx::Int,
-    cell_bins::CellBins,
-    params::LJParams
-)
-    return _local_energy_cpu(posx, posy, posz, particle_idx, cell_bins, params)
-end
-
-"""
-    _local_energy_cpu(posx, posy, posz, particle_idx, cell_bins, params)
-
-CPU implementation of local_energy (internal).
-GPU-compatible: no dictionaries, no IO, no allocations in hot paths.
-"""
-function _local_energy_cpu(
-    posx::AbstractVector{<:Real},
-    posy::AbstractVector{<:Real},
-    posz::AbstractVector{<:Real},
-    particle_idx::Int,
-    cell_bins::CellBins,
-    params::LJParams
-)
-    energy = 0.0
-    L = cell_bins.L
-    rc_sq = cell_bins.rc * cell_bins.rc
-    
-    # Get particle's cell
-    cell_idx = cell_bins.particle_cell[particle_idx]
-    
-    # Get particle position
-    px = posx[particle_idx]
-    py = posy[particle_idx]
-    pz = posz[particle_idx]
-    
-    # Iterate over neighbor cells
-    for neighbor_cell_idx in iterate_neighbor_cells(cell_idx, cell_bins.ncell)
-        # Iterate over particles in this neighbor cell
-        for idx in iterate_particles_in_cell(cell_bins, neighbor_cell_idx)
-            neighbor_idx = cell_bins.cell_particles[idx]
-            
-            if neighbor_idx != particle_idx
-                # Compute distance vector components (no allocation)
-                dr_x = posx[neighbor_idx] - px
-                dr_y = posy[neighbor_idx] - py
-                dr_z = posz[neighbor_idx] - pz
-                
-                # Apply minimum image convention (pure scalar ops)
-                dr_x = dr_x - L * floor(dr_x / L + 0.5)
-                dr_y = dr_y - L * floor(dr_y / L + 0.5)
-                dr_z = dr_z - L * floor(dr_z / L + 0.5)
-                
-                r_sq = dr_x * dr_x + dr_y * dr_y + dr_z * dr_z
-                
-                if r_sq < rc_sq && r_sq > 0.0
-                    energy += lj_potential(r_sq, params)
-                end
-            end
-        end
-    end
-    return energy
-end
-
-"""
-    total_energy(state, params)
-
-Compute total energy of the system (O(N) operation for debugging).
-"""
-function total_energy(state::LJState, params::LJParams)
-    energy = 0.0
-    posx = state.posx
-    posy = state.posy
-    posz = state.posz
-    N = params.N
-    L = params.L
-    
-    # Compute energy by summing over all pairs
-    @inbounds for i in 1:N
-        for j in (i+1):N
-            # Compute distance vector
-            dr_x = posx[j] - posx[i]
-            dr_y = posy[j] - posy[i]
-            dr_z = posz[j] - posz[i]
-            
-            # Apply minimum image convention (pure scalar ops)
-            dr_x = dr_x - L * floor(dr_x / L + 0.5)
-            dr_y = dr_y - L * floor(dr_y / L + 0.5)
-            dr_z = dr_z - L * floor(dr_z / L + 0.5)
-            
-            r_sq = dr_x * dr_x + dr_y * dr_y + dr_z * dr_z
-            
-            energy += lj_potential(r_sq, params)
-        end
+function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
+                  max_disp::Float64=0.1, seed::Int=1234)
+    if N % 4 != 0
+        throw(ArgumentError("N must be divisible by 4 for FCC lattice, got N=$N"))
     end
     
-    return energy
-end
-
-"""
-    init_lj_state(params; posx=nothing, posy=nothing, posz=nothing, seed=42)
-
-Initialize LJ simulation state. If positions are not provided, uses a simple cubic lattice.
-Accepts SoA format positions.
-"""
-function init_lj_state(
-    params::LJParams;
-    backend::AbstractBackend = CPU,
-    posx::Union{AbstractVector{<:Real}, Nothing} = nothing,
-    posy::Union{AbstractVector{<:Real}, Nothing} = nothing,
-    posz::Union{AbstractVector{<:Real}, Nothing} = nothing,
-    seed::Int = 42
-)
-    N = params.N
-    L = params.L
+    n_uc = N ÷ 4  # number of unit cells
+    nx = round(Int, cbrt(n_uc))
+    if nx * nx * nx != n_uc
+        throw(ArgumentError("N/4 must be a perfect cube for FCC lattice, got N=$N, N/4=$n_uc"))
+    end
     
-    if posx === nothing || posy === nothing || posz === nothing
-        # Create simple cubic lattice
-        n_per_side = ceil(Int, cbrt(N))
-        spacing = L / n_per_side
-        
-        posx = zeros(Float64, N)
-        posy = zeros(Float64, N)
-        posz = zeros(Float64, N)
-        
-        idx = 1
-        @inbounds for k in 1:n_per_side
-            for j in 1:n_per_side
-                for i in 1:n_per_side
-                    if idx > N
-                        break
-                    end
-                    posx[idx] = (i - 0.5) * spacing
-                    posy[idx] = (j - 0.5) * spacing
-                    posz[idx] = (k - 0.5) * spacing
-                    idx += 1
-                end
-                if idx > N
-                    break
-                end
-            end
-            if idx > N
-                break
+    # Compute box length from density
+    V = N / ρ
+    L = cbrt(V)
+    
+    # FCC lattice: 4 particles per unit cell at positions (0,0,0), (0.5,0.5,0), (0.5,0,0.5), (0,0.5,0.5)
+    # Unit cell spacing
+    a = L / nx
+    
+    # Allocate positions (3 x N)
+    pos = zeros(Float64, 3, N)
+    
+    idx = 1
+    @inbounds for k in 0:(nx-1)
+        for j in 0:(nx-1)
+            for i in 0:(nx-1)
+                # Unit cell origin
+                x0 = i * a
+                y0 = j * a
+                z0 = k * a
+                
+                # 4 particles in unit cell
+                pos[1, idx] = x0
+                pos[2, idx] = y0
+                pos[3, idx] = z0
+                idx += 1
+                
+                pos[1, idx] = x0 + 0.5 * a
+                pos[2, idx] = y0 + 0.5 * a
+                pos[3, idx] = z0
+                idx += 1
+                
+                pos[1, idx] = x0 + 0.5 * a
+                pos[2, idx] = y0
+                pos[3, idx] = z0 + 0.5 * a
+                idx += 1
+                
+                pos[1, idx] = x0
+                pos[2, idx] = y0 + 0.5 * a
+                pos[3, idx] = z0 + 0.5 * a
+                idx += 1
             end
         end
-    else
-        # Make copies to avoid modifying the original
-        posx = copy(posx)
-        posy = copy(posy)
-        posz = copy(posz)
     end
     
     # Wrap all positions to [0, L)
-    wrap_soa!(posx, posy, posz, L)
-    
-    # Build cell bins
-    cell_bins = CellBins(N, L, params.rc)
-    build_cells!(backend, cell_bins, posx, posy, posz)
-    
-    # Initialize RNG
-    rng = MersenneTwister(seed)
-    
-    # Compute initial energy
-    temp_state = LJState(backend, posx, posy, posz, cell_bins, rng, 0.0)
-    energy = total_energy(temp_state, params)
-    
-    return LJState(backend, posx, posy, posz, cell_bins, rng, energy)
-end
-
-
-"""
-    mc_step!(backend, state, params)
-
-Perform one Monte Carlo step (single-particle displacement move).
-Returns (accepted, ΔE).
-Zero-allocation inner loop.
-Dispatches on backend type.
-"""
-function mc_step!(
-    backend::AbstractBackend,
-    state::LJState,
-    params::LJParams
-)
-    return _mc_step_cpu!(state, params)
-end
-
-"""
-    mc_step!(state, params)
-
-Convenience method that uses state's backend.
-"""
-mc_step!(state::LJState, params::LJParams) = mc_step!(state.backend, state, params)
-
-"""
-    _mc_step_cpu!(state, params)
-
-CPU implementation of mc_step! (internal).
-GPU-compatible: no dictionaries, no IO, no allocations in hot paths.
-"""
-function _mc_step_cpu!(state::LJState, params::LJParams)
-    N = params.N
-    posx = state.posx
-    posy = state.posy
-    posz = state.posz
-    L = params.L
-    max_disp = params.max_disp
-    
-    # Select random particle
-    particle_idx = rand(state.rng, 1:N)
-    
-    # Store old position
-    @inbounds begin
-        x_old = posx[particle_idx]
-        y_old = posy[particle_idx]
-        z_old = posz[particle_idx]
+    scratch = MVector{3,Float64}(0.0, 0.0, 0.0)
+    @inbounds for i in 1:N
+        scratch[1] = pos[1, i]
+        scratch[2] = pos[2, i]
+        scratch[3] = pos[3, i]
+        wrap!(scratch, L)
+        pos[1, i] = scratch[1]
+        pos[2, i] = scratch[2]
+        pos[3, i] = scratch[3]
     end
     
-    # Compute old local energy
-    old_energy = local_energy(state.backend, posx, posy, posz, particle_idx, state.cell_bins, params)
+    # Create parameters
+    params = LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, max_disp)
     
-    # Generate trial displacement
-    dx = (2.0 * rand(state.rng) - 1.0) * max_disp
-    dy = (2.0 * rand(state.rng) - 1.0) * max_disp
-    dz = (2.0 * rand(state.rng) - 1.0) * max_disp
+    # Create cell list
+    cl = CellList(N, L, rc)
+    
+    # Initialize state
+    rng = Xoshiro(seed)
+    scratch_dr = MVector{3,Float64}(0.0, 0.0, 0.0)
+    st = LJState(N, L, pos, rng, cl, scratch_dr, 0, 0)
+    
+    # Rebuild cell list
+    rebuild_cells!(st)
+    
+    return (params, st)
+end
+
+"""
+    local_energy(i::Int, st::LJState, p::LJParams)::Float64
+
+Compute the local energy for particle i (sum over neighbors within rc).
+Must be allocation-free. Uses st.scratch_dr.
+"""
+function local_energy(i::Int, st::LJState, p::LJParams)::Float64
+    energy = 0.0
+    N = st.N
+    L = st.L
+    rc2 = p.rc2
+    ncell = st.cl.ncell
+    pos = st.pos
+    dr = st.scratch_dr
+    
+    # Get particle i's cell
+    cell_idx = st.cl.cell_of[i]
+    k = ((cell_idx - 1) % ncell) + 1
+    j = (((cell_idx - 1) ÷ ncell) % ncell) + 1
+    i_cell = ((cell_idx - 1) ÷ (ncell * ncell)) + 1
+    
+    # Get particle i position
+    pix = pos[1, i]
+    piy = pos[2, i]
+    piz = pos[3, i]
+    
+    # Check all 27 neighboring cells (including self)
+    @inbounds for di in -1:1
+        for dj in -1:1
+            for dk in -1:1
+                cell_i = ((i_cell - 1 + di + ncell) % ncell) + 1
+                cell_j = ((j - 1 + dj + ncell) % ncell) + 1
+                cell_k = ((k - 1 + dk + ncell) % ncell) + 1
+                
+                neighbor_cell = cell_index(cell_i, cell_j, cell_k, ncell)
+                
+                # Iterate through particles in this cell (linked list)
+                pj = st.cl.head[neighbor_cell]
+                while pj > 0
+                    if pj != i
+                        # Compute distance vector (no allocation)
+                        dr[1] = pos[1, pj] - pix
+                        dr[2] = pos[2, pj] - piy
+                        dr[3] = pos[3, pj] - piz
+                        
+                        # Apply minimum image convention
+                        minimum_image!(dr, L)
+                        
+                        r2 = dr[1]*dr[1] + dr[2]*dr[2] + dr[3]*dr[3]
+                        
+                        if r2 < rc2 && r2 > 0.0
+                            energy += lj_potential(r2, p)
+                        end
+                    end
+                    pj = st.cl.next[pj]
+                end
+            end
+        end
+    end
+    
+    return energy
+end
+
+"""
+    mc_trial!(st::LJState, p::LJParams)::Bool
+
+Perform one Monte Carlo trial move.
+Returns true if accepted, false if rejected.
+Must be allocation-free.
+"""
+function mc_trial!(st::LJState, p::LJParams)::Bool
+    N = st.N
+    L = st.L
+    pos = st.pos
+    
+    # Select random particle
+    i = rand(st.rng, 1:N)
+    
+    # Store old position
+    x_old = pos[1, i]
+    y_old = pos[2, i]
+    z_old = pos[3, i]
+    
+    # Compute old local energy
+    Eold = local_energy(i, st, p)
+    
+    # Generate trial displacement (cube of size max_disp)
+    dx = (rand(st.rng) - 0.5) * 2.0 * p.max_disp
+    dy = (rand(st.rng) - 0.5) * 2.0 * p.max_disp
+    dz = (rand(st.rng) - 0.5) * 2.0 * p.max_disp
     
     # Apply trial move
     @inbounds begin
-        posx[particle_idx] = x_old + dx
-        posy[particle_idx] = y_old + dy
-        posz[particle_idx] = z_old + dz
+        pos[1, i] = x_old + dx
+        pos[2, i] = y_old + dy
+        pos[3, i] = z_old + dz
     end
     
-    # Apply PBC (pure scalar ops)
+    # Wrap position
+    dr = st.scratch_dr
     @inbounds begin
-        x_new = posx[particle_idx]
-        y_new = posy[particle_idx]
-        z_new = posz[particle_idx]
-        
-        posx[particle_idx] = x_new - L * floor(x_new / L)
-        posy[particle_idx] = y_new - L * floor(y_new / L)
-        posz[particle_idx] = z_new - L * floor(z_new / L)
+        dr[1] = pos[1, i]
+        dr[2] = pos[2, i]
+        dr[3] = pos[3, i]
+    end
+    wrap!(dr, L)
+    @inbounds begin
+        pos[1, i] = dr[1]
+        pos[2, i] = dr[2]
+        pos[3, i] = dr[3]
     end
     
-    # Rebuild cell bins (needed when particle moves between cells)
-    # For efficiency, we could update incrementally, but rebuild is simpler and still O(1) amortized
-    build_cells!(state.backend, state.cell_bins, posx, posy, posz)
+    # Rebuild cell list
+    rebuild_cells!(st)
     
     # Compute new local energy
-    new_energy = local_energy(state.backend, posx, posy, posz, particle_idx, state.cell_bins, params)
-    
-    # Compute energy change
-    ΔE = new_energy - old_energy
+    Enew = local_energy(i, st, p)
     
     # Metropolis acceptance criterion
+    ΔE = Enew - Eold
     accepted = false
-    if ΔE <= 0.0 || rand(state.rng) < exp(-params.β * ΔE)
+    if ΔE <= 0.0 || rand(st.rng) < exp(-p.β * ΔE)
         accepted = true
-        state.energy += ΔE
     else
         # Reject: restore old position
         @inbounds begin
-            posx[particle_idx] = x_old
-            posy[particle_idx] = y_old
-            posz[particle_idx] = z_old
+            pos[1, i] = x_old
+            pos[2, i] = y_old
+            pos[3, i] = z_old
         end
         
-        # Rebuild cell bins to restore state
-        build_cells!(state.backend, state.cell_bins, posx, posy, posz)
+        # Rebuild cell list to restore state
+        rebuild_cells!(st)
     end
     
-    return (accepted, ΔE)
+    return accepted
 end
 
 """
-    run!(state, params; nsteps, sample_every=1)
+    sweep!(st::LJState, p::LJParams; rebuild_every::Int=1)::Float64
 
-Run Monte Carlo simulation for `nsteps` steps.
-Returns (acceptance_rate, energies, [optional: pressure, g(r)]).
+Perform N trial moves (one sweep).
+Returns acceptance ratio for that sweep.
+Keep allocation-free inside the per-trial loop.
 """
-function run!(
-    state::LJState,
-    params::LJParams;
-    nsteps::Int,
-    sample_every::Int = 1
-)
+function sweep!(st::LJState, p::LJParams; rebuild_every::Int=1)::Float64
+    N = st.N
     n_accepted = 0
-    n_samples = div(nsteps, sample_every) + (nsteps % sample_every > 0 ? 1 : 0)
-    energies = zeros(Float64, n_samples)
     
-    sample_idx = 1
-    for step in 1:nsteps
-        accepted, ΔE = mc_step!(state, params)
-        
+    @inbounds for trial in 1:N
+        accepted = mc_trial!(st, p)
         if accepted
             n_accepted += 1
+            st.accepted += 1
         end
+        st.attempted += 1
         
-        # Sample observables
-        if step % sample_every == 0
-            energies[sample_idx] = state.energy
-            sample_idx += 1
+        # Rebuild cells periodically if requested (currently we rebuild every trial)
+        # This is kept for API compatibility but has no effect with current implementation
+    end
+    
+    return Float64(n_accepted) / Float64(N)
+end
+
+"""
+    total_energy(st, p)::Float64
+
+Compute total energy of the system (O(N^2), can be slower/allocating).
+Double-count-safe: only counts pairs i<j.
+"""
+function total_energy(st::LJState, p::LJParams)::Float64
+    energy = 0.0
+    N = st.N
+    L = st.L
+    rc2 = p.rc2
+    pos = st.pos
+    
+    @inbounds for i in 1:N
+        for j in (i+1):N
+            # Compute distance vector
+            dr_x = pos[1, j] - pos[1, i]
+            dr_y = pos[2, j] - pos[2, i]
+            dr_z = pos[3, j] - pos[3, i]
+            
+            # Apply minimum image convention
+            L_half = L / 2.0
+            if dr_x > L_half
+                dr_x = dr_x - L
+            elseif dr_x < -L_half
+                dr_x = dr_x + L
+            end
+            if dr_y > L_half
+                dr_y = dr_y - L
+            elseif dr_y < -L_half
+                dr_y = dr_y + L
+            end
+            if dr_z > L_half
+                dr_z = dr_z - L
+            elseif dr_z < -L_half
+                dr_z = dr_z + L
+            end
+            
+            r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
+            
+            if r2 < rc2 && r2 > 0.0
+                energy += lj_potential(r2, p)
+            end
         end
     end
     
-    acceptance_rate = n_accepted / nsteps
-    return (acceptance_rate, energies)
-end
-
-"""
-    ReplicaEnsemble
-
-Ensemble of independent MC replicas for parallel execution.
-"""
-struct ReplicaEnsemble
-    replicas::Vector{LJState}  # Vector of independent replica states
-end
-
-"""
-    ReplicaEnsemble(params, R; base_seed=42)
-
-Create an ensemble of `R` independent replicas, each with its own random seed.
-Each replica is initialized independently with seed = base_seed + replica_id.
-"""
-function ReplicaEnsemble(params::LJParams, R::Int; base_seed::Int = 42)
-    replicas = Vector{LJState}(undef, R)
-    @inbounds for r in 1:R
-        seed = base_seed + r
-        replicas[r] = init_lj_state(params; seed=seed)
-    end
-    return ReplicaEnsemble(replicas)
-end
-
-"""
-    ReplicaStats
-
-Statistics for a single replica run.
-"""
-struct ReplicaStats
-    replica_id::Int            # Replica identifier
-    acceptance_rate::Float64   # Acceptance rate
-    initial_energy::Float64    # Initial energy
-    final_energy::Float64      # Final energy
-    average_energy::Float64    # Average energy over samples
-end
-
-"""
-    run_ensemble!(ensemble, params; nsteps, sample_every=1)
-
-Run MC simulation for all replicas in parallel using threads.
-Each replica runs independently and sequentially (correct Metropolis).
-Returns Vector{ReplicaStats} with per-replica statistics.
-"""
-function run_ensemble!(
-    ensemble::ReplicaEnsemble,
-    params::LJParams;
-    nsteps::Int,
-    sample_every::Int = 1
-)
-    R = length(ensemble.replicas)
-    stats = Vector{ReplicaStats}(undef, R)
-    
-    # Run replicas in parallel
-    Base.Threads.@threads for r in 1:R
-        state = ensemble.replicas[r]
-        
-        # Store initial energy
-        initial_energy = state.energy
-        
-        # Run single-replica MC (sequential, correct Metropolis)
-        acceptance_rate, energies = run!(state, params; nsteps=nsteps, sample_every=sample_every)
-        
-        # Compute statistics
-        final_energy = state.energy
-        average_energy = isempty(energies) ? final_energy : sum(energies) / length(energies)
-        
-        # Store statistics
-        stats[r] = ReplicaStats(r, acceptance_rate, initial_energy, final_energy, average_energy)
-    end
-    
-    return stats
+    return energy
 end

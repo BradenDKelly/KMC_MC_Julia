@@ -1,6 +1,20 @@
+using Pkg
+Pkg.activate(joinpath(@__DIR__, ".."))
+push!(LOAD_PATH, joinpath(@__DIR__, "..", "src"))
 using MolSim
+using BenchmarkTools
 
-# TEMP: adjust once MC code exists
-# st, params = MolSim.MC.setup_test_system()
+p, st = MolSim.MC.init_fcc(N=864, ρ=0.8, T=1.0, rc=2.5, max_disp=0.1, seed=1234)
 
-println("MolSim loaded OK.")
+# Allocated bytes check
+allocated = @allocated MolSim.MC.mc_trial!(st, p)
+println("@allocated mc_trial! = $allocated")
+
+# Code warntype check
+println("\n@code_warntype mc_trial!:")
+using InteractiveUtils
+code_warntype(MolSim.MC.mc_trial!, (typeof(st), typeof(p)))
+
+# Benchmark
+println("\nBenchmark:")
+@btime MolSim.MC.sweep!($st, $p)
