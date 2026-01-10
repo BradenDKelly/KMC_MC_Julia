@@ -41,8 +41,15 @@ using StaticArrays
     # Rebuild cell list
     MolSim.MC.rebuild_cells!(st)
     
-    # Create params (truncated, no LRC) using init_fcc for consistency
-    params, _ = MolSim.MC.init_fcc(N=N, ρ=N/(L*L*L), T=T, rc=rc, max_disp=0.1, seed=12345, use_lrc=false, lj_model=:truncated)
+    # Create params (truncated, no LRC) - cannot use init_fcc since N=8 is not FCC-valid
+    # Field order: σ, ϵ, rc, rc2, β, max_disp, use_lrc, lrc_u_per_particle, lrc_p, lj_model, apply_impulsive_correction, u_rc
+    β = 1.0 / T
+    # Compute u_rc for truncated LJ (not used but needed for struct)
+    σ2 = 1.0 * 1.0
+    invr2 = σ2 / (rc * rc)
+    invr6 = invr2 * invr2 * invr2
+    u_rc_unshifted = 4.0 * 1.0 * (invr6 * invr6 - invr6)
+    params = MolSim.MC.LJParams(1.0, 1.0, rc, rc*rc, β, 0.1, false, 0.0, 0.0, :truncated, false, u_rc_unshifted)
     
     # Compute and lock total energy (truncated)
     U_total = MolSim.MC.total_energy(st, params)

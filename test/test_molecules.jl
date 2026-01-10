@@ -14,7 +14,7 @@ using Random
     @test template.n_sites == 1
     
     # Initialize atomic system
-    N_atoms = 8
+    N_atoms = 32  # FCC-valid: 4 * 2^3 = 32
     ρ = 0.5
     T = 1.0
     rc = 2.5
@@ -61,12 +61,13 @@ end
     templates = [template]
     
     L = 5.0
+    rc = 2.5
+    T = 1.0
     com = MVector{3,Float64}(L/2, L/2, L/2)
     quat = MVector{4,Float64}(1.0, 0.0, 0.0, 0.0)
     mol = MolSim.MC.MoleculeState(com, quat, 1)
     push!(molecules, mol)
     
-    rc = 2.5
     sys = MolSim.MC.init_molecular_system(atom_pos, molecules, templates, L, rc, 12345)
     
     p = MolSim.MC.LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, 0.1, false, 0.0, 0.0, :truncated, false, 0.0)
@@ -101,12 +102,13 @@ end
     templates = [template]
     
     L = 10.0  # Large box to isolate molecule
+    rc = 2.5
+    T = 1.0
     com = MVector{3,Float64}(L/2, L/2, L/2)
     quat = MVector{4,Float64}(1.0, 0.0, 0.0, 0.0)
     mol = MolSim.MC.MoleculeState(com, quat, 1)
     push!(molecules, mol)
     
-    rc = 2.5
     sys = MolSim.MC.init_molecular_system(atom_pos, molecules, templates, L, rc, 12345)
     
     p = MolSim.MC.LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, 0.1, false, 0.0, 0.0, :truncated, false, 0.0)

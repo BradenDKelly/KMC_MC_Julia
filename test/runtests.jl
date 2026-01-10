@@ -213,6 +213,9 @@ include("test_regression_configs.jl")
 # Include molecule tests
 include("test_molecules.jl")
 
+# Include GCMC/CBMC molecule tests
+include("test_gcmc_molecules.jl")
+
 # Include regression test
 include("regress_nvt.jl")
 
