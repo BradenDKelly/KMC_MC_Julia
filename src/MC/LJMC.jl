@@ -11,13 +11,22 @@ using StaticArrays
 Parameters for Lennard-Jones Monte Carlo simulation.
 
 Fields:
-- lj_model: :truncated (default, unshifted) or :shifted (potential-shifted)
-- apply_impulsive_correction: if true, add impulsive virial correction to reported pressure (reporting only, default false)
-- u_rc: precomputed u(rc) for shifted potential (automatically computed from rc)
+- σ, ϵ: Global parameters (for backward compatibility, single-component default)
+- σ_types, ϵ_types: Per-type parameters for multicomponent (empty if single-component)
+- rc, rc2: Cutoff distance and squared cutoff
+- β: Inverse temperature (1/T)
+- max_disp: Maximum displacement for MC moves
+- use_lrc: Enable long-range corrections
+- lrc_u_per_particle, lrc_p: Precomputed LRC values
+- lj_model: :truncated (default) or :shifted
+- apply_impulsive_correction: Add impulsive virial correction to reported pressure (reporting only)
+- u_rc: Precomputed u(rc) for shifted potential
+- n_types: Number of component types (1 if single-component)
+- σ_mix, ϵ_mix: Mixing tables (σ_ab, ϵ_ab) for Lorentz-Berthelot: σ_ab = (σ_a + σ_b)/2, ϵ_ab = sqrt(ϵ_a * ϵ_b)
 """
 struct LJParams
-    σ::Float64
-    ϵ::Float64
+    σ::Float64  # Global σ (backward compatibility)
+    ϵ::Float64  # Global ϵ (backward compatibility)
     rc::Float64
     rc2::Float64
     β::Float64
@@ -26,8 +35,14 @@ struct LJParams
     lrc_u_per_particle::Float64
     lrc_p::Float64
     lj_model::Symbol  # :truncated or :shifted
-    apply_impulsive_correction::Bool  # reporting only, default false
-    u_rc::Float64  # u(rc) for shifted potential, automatically computed
+    apply_impulsive_correction::Bool
+    u_rc::Float64
+    # Multicomponent support
+    n_types::Int
+    σ_types::Vector{Float64}  # Per-type σ values (empty if n_types == 1)
+    ϵ_types::Vector{Float64}  # Per-type ϵ values (empty if n_types == 1)
+    σ_mix::Matrix{Float64}    # Mixing table: σ_mix[type_i, type_j] = σ_ab (symmetric)
+    ϵ_mix::Matrix{Float64}    # Mixing table: ϵ_mix[type_i, type_j] = ϵ_ab (symmetric)
 end
 
 """
@@ -39,6 +54,7 @@ mutable struct LJState
     N::Int
     L::Float64
     pos::Matrix{Float64}          # 3 x N, column = particle
+    types::Vector{Int}            # type[i] = type ID of particle i (1-based)
     rng::Xoshiro                  # concrete RNG type
     cl::CellList                  # cell list
     scratch_dr::MVector{3,Float64} # reused displacement vector
@@ -71,17 +87,123 @@ Returns 0.0 if r2 >= rc2.
 end
 
 """
+    _compute_mixing_tables(σ_types::Vector{Float64}, ϵ_types::Vector{Float64})
+
+Compute Lorentz-Berthelot mixing tables: σ_ab = (σ_a + σ_b)/2, ϵ_ab = sqrt(ϵ_a * ϵ_b).
+Returns (σ_mix, ϵ_mix) as symmetric matrices.
+"""
+function _compute_mixing_tables(σ_types::Vector{Float64}, ϵ_types::Vector{Float64})
+    n_types = length(σ_types)
+    @assert length(ϵ_types) == n_types "σ_types and ϵ_types must have same length"
+    
+    σ_mix = zeros(Float64, n_types, n_types)
+    ϵ_mix = zeros(Float64, n_types, n_types)
+    
+    for i in 1:n_types
+        for j in 1:n_types
+            # Lorentz-Berthelot mixing rules
+            σ_mix[i, j] = 0.5 * (σ_types[i] + σ_types[j])  # σ_ab = (σ_a + σ_b)/2
+            ϵ_mix[i, j] = sqrt(ϵ_types[i] * ϵ_types[j])    # ϵ_ab = sqrt(ϵ_a * ϵ_b)
+        end
+    end
+    
+    return σ_mix, ϵ_mix
+end
+
+"""
+    LJParams(σ, ϵ, rc, rc2, β, max_disp, use_lrc, lrc_u_per_particle, lrc_p,
+             lj_model, apply_impulsive_correction, u_rc)
+
+Backward-compatible constructor: single-component default.
+Creates LJParams with n_types=1, empty σ_types/ϵ_types, and identity mixing tables.
+"""
+function LJParams(σ::Float64, ϵ::Float64, rc::Float64, rc2::Float64, β::Float64,
+                  max_disp::Float64, use_lrc::Bool, lrc_u_per_particle::Float64,
+                  lrc_p::Float64, lj_model::Symbol, apply_impulsive_correction::Bool,
+                  u_rc::Float64)
+    # Single-component default: create 1x1 mixing tables
+    σ_mix = fill(σ, 1, 1)  # σ_11 = σ
+    ϵ_mix = fill(ϵ, 1, 1)  # ϵ_11 = ϵ
+    
+    return LJParams(σ, ϵ, rc, rc2, β, max_disp, use_lrc, lrc_u_per_particle, lrc_p,
+                    lj_model, apply_impulsive_correction, u_rc,
+                    1, Float64[], Float64[], σ_mix, ϵ_mix)
+end
+
+"""
+    LJParams(; σ_types=[1.0], ϵ_types=[1.0], rc=2.5, T=1.0, max_disp=0.1,
+             use_lrc=false, lj_model=:truncated, apply_impulsive_correction=false)
+
+Constructor with explicit per-type parameters.
+If σ_types and ϵ_types are length 1, behaves as single-component.
+Otherwise, creates multicomponent parameters with Lorentz-Berthelot mixing.
+"""
+function LJParams(; σ_types::Vector{Float64}=[1.0], ϵ_types::Vector{Float64}=[1.0],
+                  rc::Float64=2.5, T::Float64=1.0, max_disp::Float64=0.1,
+                  use_lrc::Bool=false, lj_model::Symbol=:truncated,
+                  apply_impulsive_correction::Bool=false)
+    n_types = length(σ_types)
+    @assert length(ϵ_types) == n_types "σ_types and ϵ_types must have same length"
+    @assert n_types >= 1 "Must have at least 1 type"
+    
+    # Validate lj_model
+    if lj_model != :truncated && lj_model != :shifted
+        throw(ArgumentError("lj_model must be :truncated or :shifted, got :$lj_model"))
+    end
+    
+    rc2 = rc * rc
+    β = 1.0 / T
+    
+    # Compute mixing tables
+    σ_mix, ϵ_mix = _compute_mixing_tables(σ_types, ϵ_types)
+    
+    # For backward compatibility: global σ/ϵ are from first type (or average if multiple)
+    σ_global = n_types == 1 ? σ_types[1] : sum(σ_types) / n_types
+    ϵ_global = n_types == 1 ? ϵ_types[1] : sum(ϵ_types) / n_types
+    
+    # Compute LRC if requested (using average σ/ϵ for now, per-type LRC is complex)
+    lrc_u_per_particle = 0.0
+    lrc_p = 0.0
+    if use_lrc
+        # For multicomponent, LRC should ideally be per-type, but we use average for now
+        # TODO: Implement proper multicomponent LRC
+        ρ_avg = 0.0  # Will be computed from system density
+        lrc_u_per_particle = 0.0  # Placeholder, computed later from actual density
+        lrc_p = 0.0  # Placeholder
+    end
+    
+    # Compute u(rc) for shifted potential (using average σ/ϵ)
+    inv_rc2 = 1.0 / (rc * rc)
+    σ2_avg = σ_global * σ_global
+    invr2 = σ2_avg / (rc * rc)
+    invr6 = invr2 * invr2 * invr2
+    invr12 = invr6 * invr6
+    u_rc = 4.0 * ϵ_global * (invr12 - invr6)
+    
+    # Store types only if multicomponent (empty for backward compatibility)
+    σ_types_stored = n_types == 1 ? Float64[] : σ_types
+    ϵ_types_stored = n_types == 1 ? Float64[] : ϵ_types
+    
+    return LJParams(σ_global, ϵ_global, rc, rc2, β, max_disp, use_lrc,
+                    lrc_u_per_particle, lrc_p, lj_model, apply_impulsive_correction, u_rc,
+                    n_types, σ_types_stored, ϵ_types_stored, σ_mix, ϵ_mix)
+end
+
+"""
     init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
              max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false,
-             lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false)
+             lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false,
+             types::Union{Vector{Int}, Nothing}=nothing)
 
 Initialize FCC lattice at density ρ and return (params::LJParams, st::LJState).
 Requires N divisible by 4 and N/4 to be a perfect cube.
 If use_lrc=true, precomputes long-range tail corrections for energy and pressure.
+If types is provided, assigns particle types (must be length N, values 1..n_types).
 """
 function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
                   max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false,
-                  lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false)
+                  lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false,
+                  types::Union{Vector{Int}, Nothing}=nothing)
     # Validate lj_model
     if lj_model != :truncated && lj_model != :shifted
         throw(ArgumentError("lj_model must be :truncated or :shifted, got :$lj_model"))
@@ -170,17 +292,28 @@ function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5
     inv_rc12 = inv_rc6 * inv_rc6
     u_rc = 4.0 * (inv_rc12 - inv_rc6)  # σ=ε=1
     
-    # Create parameters
+    # Default to single type (backward compatibility)
+    if types === nothing
+        types = fill(1, N)  # All particles are type 1
+    else
+        @assert length(types) == N "types must have length N"
+        n_types_used = maximum(types)
+        @assert minimum(types) >= 1 "type IDs must be >= 1"
+        # Note: Will create parameters with enough types
+    end
+    
+    # Create parameters (single-component by default, unless types provided)
+    # For now, use single-component default (backward compatibility)
     params = LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, max_disp, use_lrc, lrc_u_per_particle, lrc_p,
                       lj_model, apply_impulsive_correction, u_rc)
     
     # Create cell list
     cl = CellList(N, L, rc)
     
-    # Initialize state
+    # Initialize state (with types)
     rng = Xoshiro(seed)
     scratch_dr = MVector{3,Float64}(0.0, 0.0, 0.0)
-    st = LJState(N, L, pos, rng, cl, scratch_dr, 0, 0)
+    st = LJState(N, L, pos, copy(types), rng, cl, scratch_dr, 0, 0)
     
     # Rebuild cell list
     rebuild_cells!(st)
@@ -194,6 +327,7 @@ end
 Compute the local energy for particle i (sum over neighbors within rc).
 Must be allocation-free. Uses st.scratch_dr.
 Computes cell from actual position (does not rely on cell_of[i] being current).
+Uses mixed parameters if multicomponent (type information from st.types).
 """
 function local_energy(i::Int, st::LJState, p::LJParams)::Float64
     energy = 0.0
@@ -202,12 +336,14 @@ function local_energy(i::Int, st::LJState, p::LJParams)::Float64
     rc2 = p.rc2
     ncell = st.cl.ncell
     pos = st.pos
+    types = st.types
     dr = st.scratch_dr
     
-    # Get particle i position
+    # Get particle i position and type
     pix = pos[1, i]
     piy = pos[2, i]
     piz = pos[3, i]
+    type_i = types[i]
     
     # Compute particle i's current cell from actual position
     x_wrapped = pix - L * floor(pix / L)
@@ -246,7 +382,14 @@ function local_energy(i::Int, st::LJState, p::LJParams)::Float64
                         r2 = dr[1]*dr[1] + dr[2]*dr[2] + dr[3]*dr[3]
                         
                         if r2 < rc2 && r2 > 0.0
-                            energy += lj_potential(r2, p)
+                            type_j = types[pj]
+                            # Use mixed parameters for multicomponent
+                            if p.n_types > 1
+                                energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
+                            else
+                                # Single-component backward compatibility
+                                energy += lj_potential(r2, p)
+                            end
                         end
                     end
                     pj = st.cl.next[pj]

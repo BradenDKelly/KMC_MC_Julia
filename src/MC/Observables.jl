@@ -6,6 +6,8 @@ Observable computation utilities (energy, virial, pressure).
     lj_pair_u_from_r2(r2, p)::Float64
 
 Compute LJ pair energy from r2, using LJ model specified in p.
+BACKWARD-COMPATIBLE: Uses global σ/ϵ for single-component.
+For multicomponent, use lj_pair_u_from_r2_mixed instead.
 For :truncated: u(r) = 4ε[(σ/r)^12 - (σ/r)^6]
 For :shifted: u_shift(r) = u(r) - u(rc)
 Returns 0.0 if r2 >= rc2.
@@ -31,10 +33,58 @@ Returns 0.0 if r2 >= rc2.
 end
 
 """
+    lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)::Float64
+
+Compute LJ pair energy from r2 using Lorentz-Berthelot mixed parameters.
+For type_i and type_j, uses σ_ab = (σ_a + σ_b)/2, ϵ_ab = sqrt(ϵ_a * ϵ_b).
+For :truncated: u(r) = 4ε_ab[(σ_ab/r)^12 - (σ_ab/r)^6]
+For :shifted: u_shift(r) = u(r) - u_ab(rc) where u_ab(rc) uses mixed parameters.
+Returns 0.0 if r2 >= rc2.
+"""
+@inline function lj_pair_u_from_r2_mixed(r2::Float64, type_i::Int, type_j::Int, p::LJParams)::Float64
+    if r2 >= p.rc2 || r2 <= 0.0
+        return 0.0
+    end
+    # Guard against very small distances (must not allocate)
+    if r2 < 1e-14
+        return Inf
+    end
+    
+    # Get mixed parameters (Lorentz-Berthelot)
+    if p.n_types == 1
+        # Single-component fallback (backward compatibility)
+        σ_ab = p.σ
+        ϵ_ab = p.ϵ
+    else
+        # Multicomponent: use mixing table
+        @inbounds σ_ab = p.σ_mix[type_i, type_j]
+        @inbounds ϵ_ab = p.ϵ_mix[type_i, type_j]
+    end
+    
+    σ2_ab = σ_ab * σ_ab
+    invr2 = σ2_ab / r2
+    invr6 = invr2 * invr2 * invr2
+    u_unshifted = 4.0 * ϵ_ab * (invr6 * invr6 - invr6)
+    
+    if p.lj_model == :shifted
+        # Compute u_ab(rc) for this pair type
+        inv_rc2 = 1.0 / (p.rc * p.rc)
+        σ2_ab_rc2 = σ2_ab * inv_rc2
+        invr6_rc = σ2_ab_rc2 * σ2_ab_rc2 * σ2_ab_rc2
+        invr12_rc = invr6_rc * invr6_rc
+        u_ab_rc = 4.0 * ϵ_ab * (invr12_rc - invr6_rc)
+        return u_unshifted - u_ab_rc
+    else  # :truncated (default)
+        return u_unshifted
+    end
+end
+
+"""
     total_energy(st, p)::Float64
 
 Compute total energy of the system (O(N^2), can be slower/allocating).
 Double-count-safe: only counts pairs i<j.
+Uses mixed parameters if multicomponent (type information from st.types).
 """
 function total_energy(st, p)::Float64
     energy = 0.0
@@ -42,9 +92,13 @@ function total_energy(st, p)::Float64
     L = st.L
     rc2 = p.rc2
     pos = st.pos
+    types = st.types
     
     @inbounds for i in 1:N
+        type_i = types[i]
         for j in (i+1):N
+            type_j = types[j]
+            
             # Compute distance vector
             dr_x = pos[1, j] - pos[1, i]
             dr_y = pos[2, j] - pos[2, i]
@@ -71,7 +125,13 @@ function total_energy(st, p)::Float64
             r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
             
             if r2 < rc2 && r2 > 0.0
-                energy += lj_pair_u_from_r2(r2, p)
+                # Use mixed parameters for multicomponent
+                if p.n_types > 1
+                    energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
+                else
+                    # Single-component backward compatibility
+                    energy += lj_pair_u_from_r2(r2, p)
+                end
             end
         end
     end
@@ -88,6 +148,8 @@ end
     lj_force_magnitude_times_r(r2::Float64, p::LJParams)::Float64
 
 Compute r * f(r) for Lennard-Jones force, where f(r) = -dU/dr.
+BACKWARD-COMPATIBLE: Uses global σ/ϵ for single-component.
+For multicomponent, use lj_force_magnitude_times_r_mixed instead.
 For LJ: U(r) = 4ε[(σ/r)^12 - (σ/r)^6]
 For shifted LJ: U_shift(r) = U(r) - U(rc), so f_shift(r) = -dU_shift/dr = -dU/dr = f(r)
 Thus the force (and virial) is the same for both models.
@@ -115,11 +177,48 @@ Note: This function does not depend on lj_model since force is independent of co
 end
 
 """
+    lj_force_magnitude_times_r_mixed(r2::Float64, type_i::Int, type_j::Int, p::LJParams)::Float64
+
+Compute r * f(r) for Lennard-Jones force using Lorentz-Berthelot mixed parameters.
+For type_i and type_j, uses σ_ab = (σ_a + σ_b)/2, ϵ_ab = sqrt(ϵ_a * ϵ_b).
+Force: f(r) = -dU/dr = 4ε_ab[12σ_ab^12/r^13 - 6σ_ab^6/r^7]
+r * f(r) = 4ε_ab[12σ_ab^12/r^12 - 6σ_ab^6/r^6] = r_ij · f_ij (virial contribution)
+Returns 0.0 if r2 >= rc2.
+Note: Force is independent of lj_model (shift is constant).
+"""
+@inline function lj_force_magnitude_times_r_mixed(r2::Float64, type_i::Int, type_j::Int, p::LJParams)::Float64
+    if r2 >= p.rc2 || r2 <= 0.0
+        return 0.0
+    end
+    
+    # Get mixed parameters (Lorentz-Berthelot)
+    if p.n_types == 1
+        # Single-component fallback (backward compatibility)
+        σ_ab = p.σ
+        ϵ_ab = p.ϵ
+    else
+        # Multicomponent: use mixing table
+        @inbounds σ_ab = p.σ_mix[type_i, type_j]
+        @inbounds ϵ_ab = p.ϵ_mix[type_i, type_j]
+    end
+    
+    # Use invr2 for numerical stability
+    invr2 = 1.0 / r2
+    σ2_ab = σ_ab * σ_ab
+    σ2_ab_invr2 = σ2_ab * invr2
+    σ6_ab_invr6 = σ2_ab_invr2 * σ2_ab_invr2 * σ2_ab_invr2
+    σ12_ab_invr12 = σ6_ab_invr6 * σ6_ab_invr6
+    
+    return 4.0 * ϵ_ab * (12.0 * σ12_ab_invr12 - 6.0 * σ6_ab_invr6)
+end
+
+"""
     total_virial(st, p)::Float64
 
 Compute total virial W = Σ r_ij · f_ij for pairs i<j.
 Uses minimum image convention.
 Double-count-safe: only counts pairs i<j.
+Uses mixed parameters if multicomponent (type information from st.types).
 """
 function total_virial(st, p)::Float64
     virial = 0.0
@@ -127,9 +226,13 @@ function total_virial(st, p)::Float64
     L = st.L
     rc2 = p.rc2
     pos = st.pos
+    types = st.types
     
     @inbounds for i in 1:N
+        type_i = types[i]
         for j in (i+1):N
+            type_j = types[j]
+            
             # Compute distance vector
             dr_x = pos[1, j] - pos[1, i]
             dr_y = pos[2, j] - pos[2, i]
@@ -156,7 +259,13 @@ function total_virial(st, p)::Float64
             r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
             
             if r2 < rc2 && r2 > 0.0
-                virial += lj_force_magnitude_times_r(r2, p)
+                # Use mixed parameters for multicomponent
+                if p.n_types > 1
+                    virial += lj_force_magnitude_times_r_mixed(r2, type_i, type_j, p)
+                else
+                    # Single-component backward compatibility
+                    virial += lj_force_magnitude_times_r(r2, p)
+                end
             end
         end
     end

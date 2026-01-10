@@ -36,7 +36,8 @@ using StaticArrays
     rng = Random.Xoshiro(12345)
     cl = MolSim.MC.CellList(N, L, rc)
     scratch_dr = StaticArrays.MVector{3,Float64}(0.0, 0.0, 0.0)
-    st = MolSim.MC.LJState(N, L, pos, rng, cl, scratch_dr, 0, 0)
+    types = ones(Int, N)  # Single-component default
+    st = MolSim.MC.LJState(N, L, pos, types, rng, cl, scratch_dr, 0, 0)
     
     # Rebuild cell list
     MolSim.MC.rebuild_cells!(st)
@@ -196,7 +197,8 @@ end
     rng = Random.Xoshiro(67890)
     cl = MolSim.MC.CellList(N, L, rc)
     scratch_dr = StaticArrays.MVector{3,Float64}(0.0, 0.0, 0.0)
-    st = MolSim.MC.LJState(N, L, pos, rng, cl, scratch_dr, 0, 0)
+    types = ones(Int, N)  # Single-component default
+    st = MolSim.MC.LJState(N, L, pos, types, rng, cl, scratch_dr, 0, 0)
     
     MolSim.MC.rebuild_cells!(st)
     

@@ -3,12 +3,13 @@ Widom insertion method for excess chemical potential.
 """
 
 """
-    widom_deltaU(st, p)::Float64
+    widom_deltaU(st, p; test_type=1)::Float64
 
-Compute energy change ΔU for inserting a test particle at a random position.
+Compute energy change ΔU for inserting a test particle of type test_type at a random position.
 Must be allocation-free: reuses st.scratch_dr.
+Uses mixed parameters if multicomponent.
 """
-function widom_deltaU(st::LJState, p::LJParams)::Float64
+function widom_deltaU(st::LJState, p::LJParams; test_type::Int=1)::Float64
     N = st.N
     L = st.L
     rc2 = p.rc2
@@ -55,7 +56,14 @@ function widom_deltaU(st::LJState, p::LJParams)::Float64
                     r2 = dr[1]*dr[1] + dr[2]*dr[2] + dr[3]*dr[3]
                     
                     if r2 < rc2 && r2 > 0.0
-                        ΔU += lj_pair_u_from_r2(r2, p)
+                        type_j = st.types[pj]
+                        # Use mixed parameters for multicomponent
+                        if p.n_types > 1
+                            ΔU += lj_pair_u_from_r2_mixed(r2, test_type, type_j, p)
+                        else
+                            # Single-component backward compatibility
+                            ΔU += lj_pair_u_from_r2(r2, p)
+                        end
                     end
                     pj = st.cl.next[pj]
                 end
@@ -133,12 +141,13 @@ x is the insertion point [x, y, z].
 Returns ΔU, number of terms, and up to 20 smallest r and corresponding u(r) values.
 This function can allocate (for debugging only).
 """
-function widom_deltaU_explain(st::LJState, p::LJParams, x::Vector{Float64})
+function widom_deltaU_explain(st::LJState, p::LJParams, x::Vector{Float64}; test_type::Int=1)
     N = st.N
     L = st.L
     rc2 = p.rc2
     ncell = st.cl.ncell
     pos = st.pos
+    types = st.types
     dr = st.scratch_dr
     
     test_x = x[1]
@@ -190,7 +199,14 @@ function widom_deltaU_explain(st::LJState, p::LJParams, x::Vector{Float64})
                             rmin = r
                         end
                         
-                        u_val = lj_pair_u_from_r2(r2, p)
+                        type_j = types[pj]
+                        # Use mixed parameters for multicomponent
+                        if p.n_types > 1
+                            u_val = lj_pair_u_from_r2_mixed(r2, test_type, type_j, p)
+                        else
+                            # Single-component backward compatibility
+                            u_val = lj_pair_u_from_r2(r2, p)
+                        end
                         ΔU += u_val
                         nterms += 1
                         
@@ -369,11 +385,12 @@ end
 Compute ΔU for insertion at a specific point (x, y, z).
 Allocation-free: reuses st.scratch_dr.
 """
-function widom_deltaU_at_point(st::LJState, p::LJParams, test_x::Float64, test_y::Float64, test_z::Float64)::Float64
+function widom_deltaU_at_point(st::LJState, p::LJParams, test_x::Float64, test_y::Float64, test_z::Float64; test_type::Int=1)::Float64
     L = st.L
     rc2 = p.rc2
     ncell = st.cl.ncell
     pos = st.pos
+    types = st.types
     dr = st.scratch_dr
     
     # Compute cell index for test position
@@ -410,7 +427,14 @@ function widom_deltaU_at_point(st::LJState, p::LJParams, test_x::Float64, test_y
                     r2 = dr[1]*dr[1] + dr[2]*dr[2] + dr[3]*dr[3]
                     
                     if r2 < rc2 && r2 > 0.0
-                        ΔU += lj_pair_u_from_r2(r2, p)
+                        type_j = st.types[pj]
+                        # Use mixed parameters for multicomponent
+                        if p.n_types > 1
+                            ΔU += lj_pair_u_from_r2_mixed(r2, test_type, type_j, p)
+                        else
+                            # Single-component backward compatibility
+                            ΔU += lj_pair_u_from_r2(r2, p)
+                        end
                     end
                     pj = st.cl.next[pj]
                 end

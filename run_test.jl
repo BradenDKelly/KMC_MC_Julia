@@ -1,0 +1,1 @@
+include("test/runtests.jl")

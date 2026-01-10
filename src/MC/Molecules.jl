@@ -314,65 +314,59 @@ Excludes intramolecular interactions (sites from same molecule).
 """
 function molecular_local_energy(site_i::Int, sys::MolecularSystem, p::LJParams)::Float64
     energy = 0.0
+    N = sys.n_sites_total
     L = sys.cl.L
     rc2 = p.rc2
-    ncell = sys.cl.ncell
     pos = sys.site_pos
-    dr = sys.scratch_dr
     
-    # Get site i position
+    # Get site i position and molecule
     pix = pos[1, site_i]
     piy = pos[2, site_i]
     piz = pos[3, site_i]
-    
-    # Get molecule index for site i
     mol_i = sys.site_to_molecule[site_i]
     
-    # Compute cell index
-    x_wrapped = pix - L * floor(pix / L)
-    y_wrapped = piy - L * floor(piy / L)
-    z_wrapped = piz - L * floor(piz / L)
-    i_cell_idx = get_cell(x_wrapped, y_wrapped, z_wrapped, L, ncell)
-    
-    # Convert to 3D cell indices
-    k = ((i_cell_idx - 1) % ncell) + 1
-    j = (((i_cell_idx - 1) ÷ ncell) % ncell) + 1
-    i_cell = ((i_cell_idx - 1) ÷ (ncell * ncell)) + 1
-    
-    # Check all 27 neighboring cells
-    @inbounds for di in -1:1
-        for dj in -1:1
-            for dk in -1:1
-                cell_i = ((i_cell - 1 + di + ncell) % ncell) + 1
-                cell_j = ((j - 1 + dj + ncell) % ncell) + 1
-                cell_k = ((k - 1 + dk + ncell) % ncell) + 1
-                
-                neighbor_cell = cell_index(cell_i, cell_j, cell_k, ncell)
-                
-                # Iterate through sites in this cell
-                site_j = sys.cl.head[neighbor_cell]
-                while site_j > 0
-                    if site_j != site_i
-                        # Check if intramolecular (same molecule)
-                        mol_j = sys.site_to_molecule[site_j]
-                        if mol_i != mol_j  # Only intermolecular interactions
-                            # Compute distance vector
-                            dr[1] = pos[1, site_j] - pix
-                            dr[2] = pos[2, site_j] - piy
-                            dr[3] = pos[3, site_j] - piz
-                            
-                            # Apply minimum image convention
-                            minimum_image!(dr, L)
-                            
-                            r2 = dr[1]*dr[1] + dr[2]*dr[2] + dr[3]*dr[3]
-                            
-                            if r2 < rc2 && r2 > 0.0
-                                energy += lj_pair_u_from_r2(r2, p)
-                            end
-                        end
-                    end
-                    site_j = sys.cl.next[site_j]
-                end
+    # Loop over all other sites (same structure as molecular_total_energy for consistency)
+    @inbounds for j in 1:N
+        if j != site_i
+            mol_j = sys.site_to_molecule[j]
+            
+            # Skip intramolecular interactions
+            if mol_i == mol_j
+                continue
+            end
+            
+            # Compute distance vector (same convention as molecular_total_energy)
+            dr_x = pos[1, j] - pix
+            dr_y = pos[2, j] - piy
+            dr_z = pos[3, j] - piz
+            
+            # Apply minimum image convention (same as molecular_total_energy)
+            L_half = L / 2.0
+            if dr_x > L_half
+                dr_x = dr_x - L
+            elseif dr_x < -L_half
+                dr_x = dr_x + L
+            end
+            if dr_y > L_half
+                dr_y = dr_y - L
+            elseif dr_y < -L_half
+                dr_y = dr_y + L
+            end
+            if dr_z > L_half
+                dr_z = dr_z - L
+            elseif dr_z < -L_half
+                dr_z = dr_z + L
+            end
+            
+            r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
+            
+            if r2 < rc2 && r2 > 0.0
+                # Use mixed pair routine for consistency with atomic paths
+                # For now, use type 1 (single-component default)
+                # TODO: Support per-site types from molecule templates
+                type_i = 1
+                type_j = 1
+                energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
             end
         end
     end
@@ -428,7 +422,12 @@ function molecular_total_energy(sys::MolecularSystem, p::LJParams)::Float64
             r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
             
             if r2 < rc2 && r2 > 0.0
-                energy += lj_pair_u_from_r2(r2, p)
+                # Use mixed pair routine for consistency with atomic paths
+                # For now, use type 1 (single-component default)
+                # TODO: Support per-site types from molecule templates
+                type_i = 1
+                type_j = 1
+                energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
             end
         end
     end
@@ -606,50 +605,49 @@ function molecule_interaction_energy(
     end
     
     # Compute interaction energy: sum over candidate sites interacting with all existing sites
+    # Use the same structure as molecular_total_energy for consistency
     energy = 0.0
+    N_existing = sys.n_sites_total
     
+    # Loop over all candidate sites and all existing sites (same convention as molecular_total_energy)
     @inbounds for cand_site_idx in 1:n_sites
         cand_x = site_pos_buffer[1, cand_site_idx]
         cand_y = site_pos_buffer[2, cand_site_idx]
         cand_z = site_pos_buffer[3, cand_site_idx]
         
-        # Get cell index for candidate site
-        cand_cell_idx = get_cell(cand_x, cand_y, cand_z, L, ncell)
-        
-        # Convert to 3D cell indices
-        k = ((cand_cell_idx - 1) % ncell) + 1
-        j = (((cand_cell_idx - 1) ÷ ncell) % ncell) + 1
-        i_cell = ((cand_cell_idx - 1) ÷ (ncell * ncell)) + 1
-        
-        # Check all 27 neighboring cells
-        for di in -1:1
-            for dj in -1:1
-                for dk in -1:1
-                    cell_i = ((i_cell - 1 + di + ncell) % ncell) + 1
-                    cell_j = ((j - 1 + dj + ncell) % ncell) + 1
-                    cell_k = ((k - 1 + dk + ncell) % ncell) + 1
-                    
-                    neighbor_cell = cell_index(cell_i, cell_j, cell_k, ncell)
-                    
-                    # Iterate through existing sites in this cell
-                    site_j = sys.cl.head[neighbor_cell]
-                    while site_j > 0
-                        # Compute distance vector
-                        dr[1] = existing_pos[1, site_j] - cand_x
-                        dr[2] = existing_pos[2, site_j] - cand_y
-                        dr[3] = existing_pos[3, site_j] - cand_z
-                        
-                        # Apply minimum image convention
-                        minimum_image!(dr, L)
-                        
-                        r2 = dr[1]*dr[1] + dr[2]*dr[2] + dr[3]*dr[3]
-                        
-                        if r2 < rc2 && r2 > 0.0
-                            energy += lj_pair_u_from_r2(r2, p)
-                        end
-                        site_j = sys.cl.next[site_j]
-                    end
-                end
+        for j in 1:N_existing
+            # Compute distance vector (same convention as molecular_total_energy)
+            dr_x = existing_pos[1, j] - cand_x
+            dr_y = existing_pos[2, j] - cand_y
+            dr_z = existing_pos[3, j] - cand_z
+            
+            # Apply minimum image convention (same as molecular_total_energy)
+            L_half = L / 2.0
+            if dr_x > L_half
+                dr_x = dr_x - L
+            elseif dr_x < -L_half
+                dr_x = dr_x + L
+            end
+            if dr_y > L_half
+                dr_y = dr_y - L
+            elseif dr_y < -L_half
+                dr_y = dr_y + L
+            end
+            if dr_z > L_half
+                dr_z = dr_z - L
+            elseif dr_z < -L_half
+                dr_z = dr_z + L
+            end
+            
+            r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
+            
+            if r2 < rc2 && r2 > 0.0
+                # Use mixed pair routine for consistency with atomic paths
+                # For now, use type 1 (single-component default)
+                # TODO: Support per-site types from molecule templates
+                type_i = 1
+                type_j = 1
+                energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
             end
         end
     end
@@ -767,7 +765,7 @@ end
 
 Reset diagnostics accumulator.
 """
-function Base.reset!(diag::CBMCInsertDiagnostics)
+function reset!(diag::CBMCInsertDiagnostics)
     empty!(diag.k_trials)
     empty!(diag.W_ins)
     empty!(diag.j_star)
@@ -808,7 +806,7 @@ end
 
 Reset diagnostics accumulator.
 """
-function Base.reset!(diag::CBMCDeleteDiagnostics)
+function reset!(diag::CBMCDeleteDiagnostics)
     empty!(diag.k_trials)
     empty!(diag.W_del)
     empty!(diag.ΔU_real)

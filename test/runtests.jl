@@ -225,6 +225,12 @@ include("test_eos_virial.jl")
 # Include EOS cross-check test
 include("test_eos_crosscheck.jl")
 
+# Include multicomponent LJ tests
+include("test_multicomponent_reduction.jl")
+include("test_multicomponent_relabel.jl")
+include("test_multicomponent_pair_sanity.jl")
+include("test_multicomponent_widom.jl")
+
 # Conditional include for slow tests (long-run ensemble convergence)
 if RUN_SLOW_TESTS
     include("test_pressure_identities_slow.jl")
