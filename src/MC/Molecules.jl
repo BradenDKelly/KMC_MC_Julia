@@ -846,7 +846,8 @@ function cbmc_insert_trial!(
     beta::Float64,
     z::Float64,
     k_trials::Int=10,
-    rng::Union{Xoshiro, Nothing}=nothing
+    rng::Union{Xoshiro, Nothing}=nothing,
+    diag::Union{CBMCInsertDiagnostics, Nothing}=nothing
 )::Bool
     if rng === nothing
         rng = sys.rng
@@ -865,6 +866,9 @@ function cbmc_insert_trial!(
     candidates_quat = Vector{MVector{4,Float64}}()
     weights = Vector{Float64}(undef, k_trials)
     
+    # Store ΔU for diagnostics
+    ΔU_candidates = diag !== nothing ? Vector{Float64}(undef, k_trials) : Float64[]
+    
     for j in 1:k_trials
         # Uniform COM in box [0, L)
         r_com = MVector{3,Float64}(rand(rng) * L, rand(rng) * L, rand(rng) * L)
@@ -876,6 +880,11 @@ function cbmc_insert_trial!(
         # Compute interaction energy
         ΔU_j = molecule_interaction_energy(sys, template, r_com, q, p; site_pos_buffer=site_pos_buffer)
         
+        # Store for diagnostics
+        if diag !== nothing
+            ΔU_candidates[j] = ΔU_j
+        end
+        
         # Compute weight
         weights[j] = exp(-beta * ΔU_j)
     end
@@ -886,10 +895,23 @@ function cbmc_insert_trial!(
     # Select candidate with probability proportional to weight
     j_star = categorical_select(weights, rng)
     
+    # Record diagnostics if requested
+    if diag !== nothing
+        push!(diag.k_trials, k_trials)
+        push!(diag.W_ins, W_ins)
+        push!(diag.j_star, j_star)
+        push!(diag.ΔU_candidates, copy(ΔU_candidates))
+    end
+    
     # Acceptance probability (Frenkel-Smit: includes 1/k factor)
     # A_ins = min(1, (z*V/(N+1)) * (W_ins/k))
     A_ins = (z * V / (N + 1)) * (W_ins / k_trials)
     accept_prob = min(1.0, A_ins)
+    
+    # Record acceptance probability in diagnostics
+    if diag !== nothing
+        push!(diag.accept_prob, accept_prob)
+    end
     
     # Metropolis acceptance
     accepted = false
@@ -952,15 +974,22 @@ function cbmc_insert_trial!(
         sys.cbmc_insert_accepted += 1
     end
     
+    # Record acceptance status in diagnostics
+    if diag !== nothing
+        push!(diag.accepted, accepted)
+    end
+    
     sys.cbmc_insert_attempted += 1
     return accepted
 end
 
 """
-    cbmc_delete_trial!(sys, template_idx, p; beta, z, k_trials=10, rng=nothing)::Bool
+    cbmc_delete_trial!(sys, template_idx, p; beta, z, k_trials=10, rng=nothing, diag=nothing)::Bool
 
 CBMC deletion trial move for grand-canonical μVT ensemble.
 Proposes deleting one molecule of template template_idx.
+
+If `diag` is provided (CBMCDeleteDiagnostics), records diagnostics for this attempt.
 
 Algorithm:
 1. If N==0, reject
@@ -986,7 +1015,8 @@ function cbmc_delete_trial!(
     beta::Float64,
     z::Float64,
     k_trials::Int=10,
-    rng::Union{Xoshiro, Nothing}=nothing
+    rng::Union{Xoshiro, Nothing}=nothing,
+    diag::Union{CBMCDeleteDiagnostics, Nothing}=nothing
 )::Bool
     if rng === nothing
         rng = sys.rng
@@ -1022,6 +1052,7 @@ function cbmc_delete_trial!(
     # Generate k_trials-1 decoy candidates
     site_pos_buffer = zeros(Float64, 3, template.n_sites)
     decoy_weights = Vector{Float64}(undef, k_trials - 1)
+    ΔU_decoys = diag !== nothing ? Vector{Float64}(undef, k_trials - 1) : Float64[]
     
     for j in 1:(k_trials - 1)
         # Uniform COM + uniform quaternion
@@ -1031,6 +1062,11 @@ function cbmc_delete_trial!(
         # Compute interaction energy
         ΔU_j = molecule_interaction_energy(sys, template, r_com, q, p; site_pos_buffer=site_pos_buffer)
         
+        # Store for diagnostics
+        if diag !== nothing
+            ΔU_decoys[j] = ΔU_j
+        end
+        
         # Compute weight
         decoy_weights[j] = exp(-beta * ΔU_j)
     end
@@ -1038,14 +1074,31 @@ function cbmc_delete_trial!(
     # Compute Rosenbluth weight
     W_del = w_real + sum(decoy_weights)
     
+    # Record diagnostics if requested
+    if diag !== nothing
+        push!(diag.k_trials, k_trials)
+        push!(diag.W_del, W_del)
+        push!(diag.ΔU_real, ΔU_real)
+        push!(diag.ΔU_decoys, copy(ΔU_decoys))
+    end
+    
     # Acceptance probability (Frenkel-Smit: includes k factor)
     # A_del = min(1, (N/(z*V)) * (k/W_del))
     if W_del <= 0.0
+        if diag !== nothing
+            push!(diag.accept_prob, 0.0)
+            push!(diag.accepted, false)
+        end
         return false  # Reject if weight is zero or negative
     end
     
     A_del = (N / (z * V)) * (Float64(k_trials) / W_del)
     accept_prob = min(1.0, A_del)
+    
+    # Record acceptance probability in diagnostics
+    if diag !== nothing
+        push!(diag.accept_prob, accept_prob)
+    end
     
     # Metropolis acceptance
     accepted = false
@@ -1100,6 +1153,11 @@ function cbmc_delete_trial!(
         
         # Track acceptance
         sys.cbmc_delete_accepted += 1
+    end
+    
+    # Record acceptance status in diagnostics
+    if diag !== nothing
+        push!(diag.accepted, accepted)
     end
     
     sys.cbmc_delete_attempted += 1

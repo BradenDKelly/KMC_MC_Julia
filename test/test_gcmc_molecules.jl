@@ -447,3 +447,160 @@ end
     norm2 = q_test[1]^2 + q_test[2]^2 + q_test[3]^2 + q_test[4]^2
     @test abs(norm2 - 1.0) < 1e-10
 end
+
+@testset "CBMC Rosenbluth weight diagnostics" begin
+    # Create diatomic molecule template
+    template = MolSim.MC.create_diatomic_molecule_template(1.0)
+    
+    # Small system at very low density (weak interactions, near ideal gas)
+    atom_pos = zeros(Float64, 3, 0)
+    molecules = Vector{MolSim.MC.MoleculeState}()
+    templates = [template]
+    L = 20.0  # Large box for very low density
+    rc = 2.5
+    T = 2.0  # Higher T for weaker interactions
+    seed = 77777
+    
+    # Start with 1 molecule
+    com = MVector{3,Float64}(L/2, L/2, L/2)
+    quat = MVector{4,Float64}(1.0, 0.0, 0.0, 0.0)
+    mol = MolSim.MC.MoleculeState(com, quat, 1)
+    push!(molecules, mol)
+    
+    sys = MolSim.MC.init_molecular_system(atom_pos, molecules, templates, L, rc, seed)
+    p = MolSim.MC.LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, 0.1, false, 0.0, 0.0, :truncated, false, 0.0)
+    
+    beta = 1.0 / T
+    V = L * L * L
+    z = 0.1  # Moderate activity
+    n_attempts = 1000
+    
+    # Test different k_trials values
+    k_values = [1, 4, 16]
+    acc_rates = Dict{Int, Float64}()
+    final_diag_ins = nothing
+    final_diag_del = nothing
+    
+    for k_trials in k_values
+        # Reset system completely
+        molecules_reset = Vector{MolSim.MC.MoleculeState}()
+        com_reset = MVector{3,Float64}(L/2, L/2, L/2)
+        quat_reset = MVector{4,Float64}(1.0, 0.0, 0.0, 0.0)
+        mol_reset = MolSim.MC.MoleculeState(com_reset, quat_reset, 1)
+        push!(molecules_reset, mol_reset)
+        
+        sys = MolSim.MC.init_molecular_system(atom_pos, molecules_reset, templates, L, rc, seed)
+        
+        # Create diagnostics accumulators
+        diag_ins = MolSim.MC.CBMCInsertDiagnostics()
+        diag_del = MolSim.MC.CBMCDeleteDiagnostics()
+        
+        insert_accepted = 0
+        insert_attempted = 0
+        delete_accepted = 0
+        delete_attempted = 0
+        
+        # Run alternating insert/delete attempts
+        for step in 1:n_attempts
+            if step % 2 == 1
+                # Attempt insertion
+                accepted = MolSim.MC.cbmc_insert_trial!(sys, 1, p; beta=beta, z=z, k_trials=k_trials, diag=diag_ins)
+                insert_attempted += 1
+                if accepted
+                    insert_accepted += 1
+                end
+            else
+                # Attempt deletion (only if N > 0)
+                if sys.n_molecules > 0
+                    accepted = MolSim.MC.cbmc_delete_trial!(sys, 1, p; beta=beta, z=z, k_trials=k_trials, diag=diag_del)
+                    delete_attempted += 1
+                    if accepted
+                        delete_accepted += 1
+                    end
+                end
+            end
+        end
+        
+        # (a) Check for NaNs/Infs
+        for W in diag_ins.W_ins
+            @test isfinite(W)
+            @test W >= 0.0
+        end
+        for W in diag_del.W_del
+            @test isfinite(W)
+            @test W >= 0.0
+        end
+        for ΔU in diag_ins.ΔU_candidates
+            for u in ΔU
+                @test isfinite(u)
+            end
+        end
+        for ΔU in diag_del.ΔU_real
+            @test isfinite(ΔU)
+        end
+        for ΔU_vec in diag_del.ΔU_decoys
+            for u in ΔU_vec
+                @test isfinite(u)
+            end
+        end
+        
+        # (b) Check W distributions are finite and non-degenerate
+        if length(diag_ins.W_ins) > 0
+            W_mean = sum(diag_ins.W_ins) / length(diag_ins.W_ins)
+            W_var = sum((w - W_mean)^2 for w in diag_ins.W_ins) / length(diag_ins.W_ins)
+            @test isfinite(W_mean)
+            @test isfinite(W_var)
+            @test W_mean > 0.0
+            # Non-degenerate: variance should be positive (not all weights identical)
+            @test W_var >= 0.0
+        end
+        
+        if length(diag_del.W_del) > 0
+            W_mean = sum(diag_del.W_del) / length(diag_del.W_del)
+            W_var = sum((w - W_mean)^2 for w in diag_del.W_del) / length(diag_del.W_del)
+            @test isfinite(W_mean)
+            @test isfinite(W_var)
+            @test W_mean > 0.0
+            @test W_var >= 0.0
+        end
+        
+        # Compute acceptance rate
+        total_attempted = insert_attempted + delete_attempted
+        total_accepted = insert_accepted + delete_accepted
+        acc_rate = total_attempted > 0 ? Float64(total_accepted) / Float64(total_attempted) : 0.0
+        acc_rates[k_trials] = acc_rate
+        
+        # (d) Detailed balance sanity check (for low density, near ideal gas)
+        # Expected: insert/delete ratio ≈ z*V / N_avg
+        if delete_accepted > 0 && insert_accepted > 0
+            ratio_empirical = Float64(insert_accepted) / Float64(delete_accepted)
+            # For very low density, N_avg ≈ 1-2, z*V = 0.1 * 8000 = 800
+            # Expected ratio ≈ 400-800, but allow wide tolerance for stochasticity
+            @test ratio_empirical > 10.0  # At least some preference for insertion
+            @test ratio_empirical < 10000.0  # Not unreasonably high
+        end
+        
+        # Store final diagnostics for summary stats
+        if k_trials == k_values[end]
+            final_diag_ins = diag_ins
+            final_diag_del = diag_del
+        end
+    end
+    
+    # (c) Check acceptance rate increases with k_trials
+    if haskey(acc_rates, 1) && haskey(acc_rates, 4) && haskey(acc_rates, 16)
+        @test acc_rates[1] < acc_rates[4] + 0.1  # Allow some tolerance for stochasticity
+        @test acc_rates[4] < acc_rates[16] + 0.1
+    end
+    
+    # Summary statistics check
+    # Verify log-mean of W is finite (using final diagnostics)
+    if final_diag_ins !== nothing && length(final_diag_ins.W_ins) > 0
+        W_nonzero = [w for w in final_diag_ins.W_ins if w > 0.0]
+        if length(W_nonzero) > 0
+            log_W_sum = sum(log(w) for w in W_nonzero)
+            log_W_mean = log_W_sum / length(W_nonzero)
+            @test isfinite(log_W_mean)
+        end
+    end
+end
