@@ -9,6 +9,11 @@ using StaticArrays
     LJParams
 
 Parameters for Lennard-Jones Monte Carlo simulation.
+
+Fields:
+- lj_model: :truncated (default, unshifted) or :shifted (potential-shifted)
+- apply_impulsive_correction: if true, add impulsive virial correction to reported pressure (reporting only, default false)
+- u_rc: precomputed u(rc) for shifted potential (automatically computed from rc)
 """
 struct LJParams
     σ::Float64
@@ -20,6 +25,9 @@ struct LJParams
     use_lrc::Bool
     lrc_u_per_particle::Float64
     lrc_p::Float64
+    lj_model::Symbol  # :truncated or :shifted
+    apply_impulsive_correction::Bool  # reporting only, default false
+    u_rc::Float64  # u(rc) for shifted potential, automatically computed
 end
 
 """
@@ -41,7 +49,9 @@ end
 """
     lj_potential(r2, p::LJParams)
 
-Compute Lennard-Jones potential: 4ϵ[(σ/r)^12 - (σ/r)^6] at squared distance `r2`.
+Compute Lennard-Jones potential at squared distance `r2`.
+For :truncated (default): u(r) = 4ϵ[(σ/r)^12 - (σ/r)^6] for r < rc, 0 otherwise
+For :shifted: u_shift(r) = u(r) - u(rc) for r < rc, 0 otherwise
 Returns 0.0 if r2 >= rc2.
 """
 @inline function lj_potential(r2::Float64, p::LJParams)
@@ -51,19 +61,34 @@ Returns 0.0 if r2 >= rc2.
     σ2_over_r2 = (p.σ * p.σ) / r2
     σ6_over_r6 = σ2_over_r2 * σ2_over_r2 * σ2_over_r2
     σ12_over_r12 = σ6_over_r6 * σ6_over_r6
-    return 4.0 * p.ϵ * (σ12_over_r12 - σ6_over_r6)
+    u_unshifted = 4.0 * p.ϵ * (σ12_over_r12 - σ6_over_r6)
+    
+    if p.lj_model == :shifted
+        return u_unshifted - p.u_rc
+    else  # :truncated (default)
+        return u_unshifted
+    end
 end
 
 """
     init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
-             max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false)
+             max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false,
+             lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false)
 
 Initialize FCC lattice at density ρ and return (params::LJParams, st::LJState).
 Requires N divisible by 4 and N/4 to be a perfect cube.
 If use_lrc=true, precomputes long-range tail corrections for energy and pressure.
 """
 function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
-                  max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false)
+                  max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false,
+                  lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false)
+    # Validate lj_model
+    if lj_model != :truncated && lj_model != :shifted
+        throw(ArgumentError("lj_model must be :truncated or :shifted, got :$lj_model"))
+    end
+    
+    # Note: shifted LJ can use impulsive correction because the force is still discontinuous at rc
+    # even though the potential is continuous. The correction accounts for this discontinuity.
     if N % 4 != 0
         throw(ArgumentError("N must be divisible by 4 for FCC lattice, got N=$N"))
     end
@@ -138,8 +163,16 @@ function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5
         lrc_p = compute_lrc_pressure(ρ, rc)
     end
     
+    # Compute u(rc) for shifted potential (even if not using it, for consistency)
+    # u(rc) = 4ε[(σ/rc)^12 - (σ/rc)^6], with σ=ε=1
+    inv_rc2 = 1.0 / (rc * rc)
+    inv_rc6 = inv_rc2 * inv_rc2 * inv_rc2
+    inv_rc12 = inv_rc6 * inv_rc6
+    u_rc = 4.0 * (inv_rc12 - inv_rc6)  # σ=ε=1
+    
     # Create parameters
-    params = LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, max_disp, use_lrc, lrc_u_per_particle, lrc_p)
+    params = LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, max_disp, use_lrc, lrc_u_per_particle, lrc_p,
+                      lj_model, apply_impulsive_correction, u_rc)
     
     # Create cell list
     cl = CellList(N, L, rc)
@@ -391,7 +424,10 @@ function volume_trial!(st::LJState, p::LJParams; max_dlnV::Float64=0.01, Pext::F
     U_new = total_energy(st, p)
     
     # Metropolis acceptance criterion for NPT:
-    # acc = exp[-β(ΔU + Pext*(V' - V)) + N*ln(V'/V)]
+    # Standard formula: acc = exp[-β(ΔU + Pext*(V' - V)) + N*ln(V'/V)]
+    # Note: Jacobian term +N*ln(V'/V) comes from coordinate scaling: r' = r*(V'/V)^(1/3)
+    # For expansion (V'>V), ln(V'/V)>0, so +N*ln(V'/V)>0 (favors expansion, correct for ideal gas)
+    # This ensures detailed balance with the Boltzmann factor
     ΔU = U_new - U_old
     ΔV = V_new - V_old
     β = p.β

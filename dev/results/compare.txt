@@ -1,0 +1,12 @@
+NVT-NPT Comparison
+================================================================================
+
+NVT target density: 0.2
+NPT mean density:   0.21275209430003775 ± 0.0002670657346460843
+
+Difference:
+  delta = 0.012752094300037736
+  z-score = 47.74889716547434
+
+Interpretation:
+  ⚠ Disagreement: |z-score| > 2.0

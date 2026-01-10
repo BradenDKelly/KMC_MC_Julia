@@ -1,9 +1,9 @@
-using Pkg
-Pkg.activate(joinpath(@__DIR__, ".."))
-push!(LOAD_PATH, joinpath(@__DIR__, "..", "src"))
-using MolSim
 using Test
+using MolSim
 using StaticArrays
+
+# Gate for slow tests (ensemble convergence, long runs)
+const RUN_SLOW_TESTS = get(ENV, "MOLSIM_SLOW_TESTS", "0") == "1"
 
 @testset "wrap! tests" begin
     L = 10.0
@@ -195,5 +195,38 @@ end
     @test alloc_pressure_no_lrc <= 64
 end
 
+# Include physics invariant tests
+include("test_invariants.jl")
+
+# Include ΔU correctness tests
+include("test_deltaU.jl")
+
+# Include detailed balance tests
+include("test_detailed_balance.jl")
+
+# Include pressure identity tests
+include("test_pressure_identities.jl")
+
+# Include regression configuration locks
+include("test_regression_configs.jl")
+
+# Include molecule tests
+include("test_molecules.jl")
+
 # Include regression test
 include("regress_nvt.jl")
+
+# Include EOS virial test
+include("test_eos_virial.jl")
+
+# Include EOS cross-check test
+include("test_eos_crosscheck.jl")
+
+# Conditional include for slow tests (long-run ensemble convergence)
+if RUN_SLOW_TESTS
+    include("test_pressure_identities_slow.jl")
+else
+    @info "Slow tests skipped. To enable, set environment variable: MOLSIM_SLOW_TESTS=1" *
+          "\n  Windows PowerShell: `\$env:MOLSIM_SLOW_TESTS=\"1\"; julia --project -e \"using Pkg; Pkg.test()\"`" *
+          "\n  cmd.exe: `set MOLSIM_SLOW_TESTS=1 && julia --project -e \"using Pkg; Pkg.test()\"`"
+end

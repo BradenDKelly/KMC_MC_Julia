@@ -1,8 +1,5 @@
-using Pkg
-Pkg.activate(joinpath(@__DIR__, ".."))
-push!(LOAD_PATH, joinpath(@__DIR__, "..", "src"))
-using MolSim
 using Test
+using MolSim
 
 @testset "NVT regression" begin
     # Settings (fast version for test)
