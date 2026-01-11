@@ -204,8 +204,76 @@ To run long tests:
 LONG_TESTS=1 julia --project test/test_table3_2_remc.jl
 ```
 
+## Running Long-Run Table 3.2 Reproductions
+
+For production-quality Table 3.2 reproductions, use the long-run mode:
+
+```bash
+julia --project scripts/run_table3_2_reaction_ensemble.jl --long
+```
+
+This enables longer equilibration and production phases (default: 2,000,000 sweeps each) with appropriate sampling stride (500).
+
+### Command-Line Options
+
+- `--seed <int>`: RNG seed (default: 12345)
+- `--equil <int>`: Equilibration sweeps (default: 50000, long-run: 2000000)
+- `--prod <int>`: Production sweeps (default: 200000, long-run: 2000000)
+- `--stride <int>`: Sampling stride (default: 10, long-run: 500)
+- `--blocks <int>`: Block size for averaging (default: 50)
+- `--outdir <path>`: Output directory (default: results)
+- `--logfile <path>`: Combined log file (default: outdir/table3_2_run.log)
+- `--long`: Enable long-run mode (uses long-run defaults)
+- `--short`: Use short-run defaults (default behavior)
+
+Environment variables:
+- `LONG_RUN=1`: Enable long-run mode (alternative to --long)
+- `SEED=<int>`: Override RNG seed
+
+### Output Files
+
+Each run produces:
+
+1. **Per-reaction files** (in `outdir/`):
+   - `<reaction>_seed<seed>.log`: Human-readable log with full statepoint echo, results, and timing
+   - `table3_2_<reaction>_seed<seed>.json`: Machine-readable JSON with all data
+
+2. **Combined summary files**:
+   - `summary_seed<seed>.txt`: Human-readable table with all reactions
+   - `summary_seed<seed>.json`: Machine-readable JSON with all reactions
+
+3. **Combined log**:
+   - `table3_2_run.log` (or custom path): Combined log of all reactions
+
+### Example Output
+
+The script prints timing information to the terminal:
+
+```
+Timing (seconds):
+  Initialization: 0.12
+  Equilibration: 45.23
+  Production: 52.17
+  Total: 97.52
+```
+
+The summary file contains a compact table comparing all reactions:
+
+```
+Reaction | N_A (mean±stderr) | N_product (mean±stderr) | ρ_total (mean±stderr) | Trans acc | Vol acc | Rxn acc | Time (s)
+```
+
+### Recommended Settings
+
+For typical desktop machines:
+- Short runs: Default settings (50k equil, 200k prod) - completes in minutes
+- Long runs: 2M equil, 2M prod - may take several hours for all 6 reactions
+
+The script always starts each reaction with exactly 400 particles of species A (reactant) and zero products, ensuring reproducible initialization.
+
 ## Notes
 
 - This implementation uses REMC/RxMC equilibrium sampling. It does not introduce physical time; reactions are accepted/rejected based on equilibrium criteria only.
 - The implementation is currently limited to single-site atomic species. Extension to molecular systems with CBMC insertion/deletion is planned for future work.
 - For Table 3.2 benchmarks, `logK` is set to 0.0; equilibrium is determined solely by the `logq` values and the acceptance criterion.
+- All runs are deterministic when using the same seed; timing may vary but results are reproducible.

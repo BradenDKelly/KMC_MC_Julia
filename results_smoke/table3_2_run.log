@@ -1,0 +1,14 @@
+================================================================================
+Table 3.2 Reaction Ensemble Monte Carlo Benchmarks
+================================================================================
+Mode: SHORT RUN
+Seed: 99999
+Equilibration sweeps: 50000
+Production sweeps: 200000
+Sample every: 10
+Block size: 50
+Output directory: results_smoke
+Log file: results_smoke\table3_2_run.log
+
+SMOKE MODE: Running A⇌B only (100 sweeps)
+Smoke test completed: A⇌B, N_A=390.6, N_B=9.4, rho=0.742

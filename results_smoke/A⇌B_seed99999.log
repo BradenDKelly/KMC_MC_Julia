@@ -1,0 +1,70 @@
+================================================================================
+STATEPOINT ECHO
+================================================================================
+Reaction: A⇌B
+Stoichiometry: 1A +1B
+Ensemble: NPT Reaction Ensemble MC (REMC)
+Seed: 99999
+T = 2.0
+P = 5.0
+rc = 2.5
+LJ model: shifted (cut-and-shifted)
+LRC: false
+Mixing rule: Lorentz-Berthelot (σ_ab = (σ_a + σ_b)/2, ε_ab = sqrt(ε_a * ε_b))
+
+Species parameters:
+  A: σ=1.0, ε=1.0, q=0.002, logq=-6.214608
+  B: σ=1.0, ε=1.0, q=0.002, logq=-6.214608
+
+Initial composition:
+  N_A = 400
+  N_B = 0
+Initial density guess: 0.75
+
+Move parameters:
+  Translation: max_disp = 0.1
+  Volume: max_dlnV = 0.01, every 10 sweeps
+  Reaction: p_reaction = 0.1 per sweep
+
+Run lengths:
+  Equilibration: 50 sweeps
+  Production: 100 sweeps
+  Sample every: 10
+  Block size: 10
+================================================================================
+
+Equilibration: 50 sweeps...
+Equilibration completed in 0.2 seconds
+Production: 100 sweeps...
+Production completed in 0.39 seconds
+
+Results:
+--------------------------------------------------------------------------------
+Species | Mean N | StdErr N
+--------------------------------------------------------------------------------
+A       |    390.6 |      NaN
+B       |      9.4 |      NaN
+V       | 538.7432 |      NaN
+ρ_total |   0.7425 |      NaN
+--------------------------------------------------------------------------------
+Acceptance rates:
+  Translation: 0.5917
+  Volume: 0.6
+  Reaction: 1.0
+Timing (seconds):
+  Initialization: 0.0
+  Equilibration: 0.2
+  Production: 0.39
+  Total: 0.68
+
+Comparison with Table 3.2 targets:
+--------------------------------------------------------------------------------
+Quantity | Measured | Target | % Error
+--------------------------------------------------------------------------------
+N_A      |    390.6 |  200.0 |   95.3%
+N_B      |      9.4 |  200.0 |   95.3%
+ρ_total  |   0.7425 |  0.766 |   3.07%
+--------------------------------------------------------------------------------
+
+JSON output written to: results_smoke\table3_2_A⇌B_seed99999.json
+

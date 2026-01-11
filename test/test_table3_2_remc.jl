@@ -141,6 +141,7 @@ end
 
 @testset "Table 3.2 REMC: A⇌B symmetry sanity" begin
     # A and B have identical parameters, so composition should drift from all-A
+    # With symmetric proposal and acceptance, should approach ~50/50
     N_A_init = 40
     T = 2.0
     P = 5.0
@@ -206,8 +207,10 @@ end
     x_B_mean = N_B_mean / N_A_init
     
     @test N_B_mean > 0.0  # Should have some B
-    @test x_B_mean >= 0.1  # At least 10% B
-    @test x_B_mean <= 0.9  # At most 90% B (loose bounds)
+    # With symmetric proposal and acceptance, should be roughly 50/50
+    # Use loose bounds [0.3, 0.7] to account for finite-size and short run
+    @test x_B_mean >= 0.3  # At least 30% B
+    @test x_B_mean <= 0.7  # At most 70% B
 end
 
 @testset "Table 3.2 REMC: approximate Table 3.2 match (long test)" begin

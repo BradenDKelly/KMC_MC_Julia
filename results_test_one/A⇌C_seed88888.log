@@ -1,0 +1,81 @@
+================================================================================
+STATEPOINT ECHO
+================================================================================
+Reaction: A⇌C
+Stoichiometry: 1A +1C
+Ensemble: NPT Reaction Ensemble MC (REMC)
+Seed: 88888
+T = 2.0
+P = 5.0
+rc = 2.5
+LJ model: shifted (cut-and-shifted)
+LRC: false
+Mixing rule: Lorentz-Berthelot (σ_ab = (σ_a + σ_b)/2, ε_ab = sqrt(ε_a * ε_b))
+
+Species parameters:
+  A: σ=1.0, ε=1.0, q=0.002, logq=-6.214608
+  C: σ=1.1, ε=0.9, q=0.002, logq=-6.214608
+
+Initial composition:
+  N_A = 400
+  N_C = 0
+Initial density guess: 0.75
+
+Move parameters:
+  Translation: max_disp = 0.1
+  Volume: max_dlnV = 0.01, every 10 sweeps
+  Reaction: p_reaction = 0.1 per sweep
+
+Run lengths:
+  Equilibration: 200 sweeps
+  Production: 500 sweeps
+  Sample every: 10
+  Block size: 50
+================================================================================
+
+Equilibration: 200 sweeps...
+Equilibration completed in 0.86 seconds
+Production: 500 sweeps...
+Production completed in 2.01 seconds
+
+Results:
+--------------------------------------------------------------------------------
+Species | Mean N | StdErr N
+--------------------------------------------------------------------------------
+A       |    395.6 |      NaN
+C       |      4.4 |      NaN
+V       | 531.2713 |      NaN
+ρ_total |   0.7529 |      NaN
+--------------------------------------------------------------------------------
+Acceptance rates:
+  Translation: 0.5997
+  Volume: 0.72
+  Reaction: 0.9804
+Timing (seconds):
+  Initialization: 0.0
+  Equilibration: 0.86
+  Production: 2.01
+  Total: 2.88
+
+================================================================================
+FINAL SUMMARY
+================================================================================
+Species counts:
+  N_A = 395.6 ± NaN
+  N_C = 4.4 ± NaN
+Total density: ρ_total = 0.7529 ± NaN
+Acceptance rates: translation=0.6, volume=0.72, reaction=0.98
+Wall time: init=0.0s, equil=0.86s, prod=2.01s, total=2.88s
+
+================================================================================
+THESIS COMPARISON (Table 3.2 ReKMC row)
+================================================================================
+Quantity      | Measured      | Target        | % Error
+--------------------------------------------------------------------------------
+N_A           |         395.6 |         297.7 |  32.89%
+N_C           |           4.4 |         102.3 |   95.7%
+ρ_total       |        0.7529 |         0.718 |   4.86%
+--------------------------------------------------------------------------------
+
+JSON output written to: results_test_one\table3_2_A⇌C_seed88888.json
+
