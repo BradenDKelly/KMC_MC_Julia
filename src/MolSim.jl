@@ -12,9 +12,10 @@ module MolSim
         include("MC/LJMC.jl")
         include("MC/BlockAveraging.jl")
         include("MC/Observables.jl")
-        include("MC/Widom.jl")
-        include("MC/Molecules.jl")
-        include("MC/Fluctuations.jl")
+    include("MC/Widom.jl")
+    include("MC/Molecules.jl")
+    include("MC/Fluctuations.jl")
+    include("MC/ReactionEnsemble.jl")
     end
 
 # EOS submodule

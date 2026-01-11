@@ -1,0 +1,71 @@
+{
+  "meta": {
+    "reaction": "A⇌B",
+    "seed": 12345,
+    "timestamp": "2026-01-11T09:56:51.495"
+  },
+  "run_lengths": {
+    "sweeps_equil": 100,
+    "block_size": 50,
+    "sweeps_prod": 200,
+    "sample_every": 10
+  },
+  "statepoint": {
+    "rc": 2.5,
+    "T": 2.0,
+    "P": 5.0,
+    "use_lrc": false,
+    "mixing_rule": "Lorentz-Berthelot",
+    "lj_model": "shifted"
+  },
+  "moves": {
+    "max_dlnV": 0.01,
+    "p_reaction": 0.1,
+    "vol_move_every": 10,
+    "max_disp": 0.1
+  },
+  "reaction": {
+    "stoichiometry": {
+      "B": 1,
+      "A": -1
+    }
+  },
+  "results": {
+    "acceptance_rates": {
+      "translation": 0.599475,
+      "volume": 0.75,
+      "reaction": 1.0
+    },
+    "stderrs": {
+      "N_B": null,
+      "rho_total": null,
+      "V": null,
+      "N_A": null
+    },
+    "targets": {
+      "ρ_total": 0.766,
+      "N_B": 200.0,
+      "N_A": 200.0
+    },
+    "means": {
+      "N_B": 2.15,
+      "rho_total": 0.7515996179199228,
+      "V": 532.1982481936506,
+      "N_A": 397.85
+    }
+  },
+  "species": {
+    "B": {
+      "sigma": 1.0,
+      "logq": -6.214608098422191,
+      "epsilon": 1.0,
+      "q": 0.0020000000000000005
+    },
+    "A": {
+      "sigma": 1.0,
+      "logq": -6.214608098422191,
+      "epsilon": 1.0,
+      "q": 0.0020000000000000005
+    }
+  }
+}
