@@ -206,6 +206,9 @@ include("test_detailed_balance.jl")
 
 # Include pressure identity tests
 include("test_pressure_identities.jl")
+include("test_rdf.jl")
+include("test_rdf_mixture.jl")
+include("test_fluctuations.jl")
 
 # Include regression configuration locks
 include("test_regression_configs.jl")
