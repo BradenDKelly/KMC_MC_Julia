@@ -237,6 +237,7 @@ include("test_multicomponent_widom.jl")
 # Include RxMC tests
 include("test_rxmc.jl")
 include("test_table3_2_remc.jl")
+include("test_reaction_detailed_balance_ideal_gas.jl")
 
 # Conditional include for slow tests (long-run ensemble convergence)
 if RUN_SLOW_TESTS

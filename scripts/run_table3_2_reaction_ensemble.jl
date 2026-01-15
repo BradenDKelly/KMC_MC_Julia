@@ -244,6 +244,59 @@ function print_statepoint_echo(logger::SimpleLogger, reaction_name::String, spec
     log_print(logger, "")
 end
 
+"""
+    get_rng_fingerprint_token(rng)
+
+Get a non-invasive RNG fingerprint token by copying the RNG and drawing 4 UInt64 values.
+Returns a tuple of 4 UInt64 values that uniquely identify the RNG state.
+"""
+function get_rng_fingerprint_token(rng)
+    rng_copy = copy(rng)
+    tokens = [rand(rng_copy, UInt64) for _ in 1:4]
+    return (tokens[1], tokens[2], tokens[3], tokens[4])
+end
+
+"""
+    compute_state_fingerprint(st, n_species, species_names)
+
+Compute a deterministic hash fingerprint of the state configuration.
+Returns a tuple: (hash_value, N_A, N_D, N_F, V, rho_total, L)
+where hash_value is the hash of positions + types + box + RNG state.
+"""
+function compute_state_fingerprint(st, n_species, species_names)
+    # Get species counts
+    counts = MolSim.MC.count_species(st, n_species)
+    
+    # Find indices for A, D, F
+    idx_A = findfirst(x -> x == "A", species_names)
+    idx_D = findfirst(x -> x == "D", species_names)
+    idx_F = findfirst(x -> x == "F", species_names)
+    
+    N_A = idx_A !== nothing ? counts[idx_A] : 0
+    N_D = idx_D !== nothing ? counts[idx_D] : 0
+    N_F = idx_F !== nothing ? counts[idx_F] : 0
+    
+    # Compute volume and density
+    V = st.L * st.L * st.L
+    N_total = st.N
+    rho_total = N_total / V
+    L = st.L
+    
+    # Compute hash of configuration: positions + types + box + RNG state
+    # Use a combined hash of all relevant state components
+    # Note: RNG state is included via hash(st.rng), though Xoshiro internal state may not be fully captured
+    hash_pos = hash(st.pos)
+    hash_types = hash(st.types)
+    hash_box = hash(st.L)
+    hash_rng = hash(st.rng)  # May not capture full RNG state, but better than nothing
+    hash_N = hash(st.N)
+    
+    # Combine hashes (order matters for determinism)
+    config_hash = hash((hash_pos, hash_types, hash_box, hash_N, hash_rng))
+    
+    return (config_hash, N_A, N_D, N_F, V, rho_total, L)
+end
+
 function run_reaction_benchmark(reaction_name::String, logger::SimpleLogger;
                                 seed::Int=12345,
                                 sweeps_equil::Int=5000,
@@ -257,7 +310,9 @@ function run_reaction_benchmark(reaction_name::String, logger::SimpleLogger;
                                 block_size::Int=50,
                                 rho_init::Float64=0.75,
                                 proposal_mode::Symbol=:com_insert,
-                                com_kernel_Δ::Float64=0.05)
+                                com_kernel_Δ::Float64=0.05,
+                                insertion_mode::Symbol=:standard_remc,
+                                user_set_insertion_mode::Bool=false)
     """Run a single reaction benchmark. Returns results dict and timing dict."""
     
     timing = Dict{String, Float64}()
@@ -290,12 +345,35 @@ function run_reaction_benchmark(reaction_name::String, logger::SimpleLogger;
     # Create reaction
     rxn = create_reaction_object(reaction_name, species_names, logq)
     
+    # Apply default insertion_mode if user didn't specify (per-reaction default)
+    # If user specified --insertion_mode, use it for all reactions
+    # If user didn't specify, use :standard_remc for A⇌D+F, :anchored for others
+    if user_set_insertion_mode
+        # User specified --insertion_mode: use it for all reactions
+        effective_insertion_mode = insertion_mode
+    else
+        # User didn't specify: apply per-reaction default
+        if reaction_name == "A⇌D+F"
+            effective_insertion_mode = :standard_remc
+        else
+            effective_insertion_mode = :anchored
+        end
+    end
+    
     # Print statepoint echo
+    # Note: p_reaction printed here is the same variable used in the simulation kernel,
+    # ensuring consistency between echo and actual usage
     print_statepoint_echo(logger, reaction_name, species_names, σ_types, ϵ_types, logq,
                           stoichiometry, T_TARGET, P_TARGET, RC,
                           N_init, rho_init, seed, max_disp, max_dlnV,
                           vol_move_every, p_reaction, sweeps_equil, sweeps_prod,
                           sample_every, block_size)
+    
+    # Log insertion_mode settings
+    log_print(logger, "")
+    log_print(logger, "Insertion mode settings:")
+    log_print(logger, "  CLI insertion_mode: $(insertion_mode)")
+    log_print(logger, "  Effective insertion_mode for $reaction_name: $(effective_insertion_mode)")
     
     # Create initial state (always start with exactly 400 A particles, zero products)
     t_init_start = time()
@@ -303,20 +381,225 @@ function run_reaction_benchmark(reaction_name::String, logger::SimpleLogger;
                                T_TARGET, RC, max_disp, seed)
     timing["initialization"] = time() - t_init_start
     
+    # DB audit: set up callback to capture first accepted forward and reverse moves for A⇌D+F
+    db_audit_enabled = get(ENV, "DB_AUDIT", "0") == "1"
+    db_audit_forward_captured = Ref(false)
+    db_audit_reverse_captured = Ref(false)
+    db_audit_forward_breakdown = Ref{Union{MolSim.MC.AcceptanceBreakdown, Nothing}}(nothing)
+    db_audit_reverse_breakdown = Ref{Union{MolSim.MC.AcceptanceBreakdown, Nothing}}(nothing)
+    
+    function db_audit_callback(breakdown::MolSim.MC.AcceptanceBreakdown)
+        if breakdown.direction == :forward && !db_audit_forward_captured[]
+            db_audit_forward_captured[] = true
+            db_audit_forward_breakdown[] = breakdown
+        elseif breakdown.direction == :reverse && !db_audit_reverse_captured[]
+            db_audit_reverse_captured[] = true
+            db_audit_reverse_breakdown[] = breakdown
+        end
+    end
+    
     # Equilibration
     log_print(logger, "Equilibration: $sweeps_equil sweeps...")
     t_equil_start = time()
     for sweep in 1:sweeps_equil
         do_vol = (sweep % vol_move_every == 0)
+        # Use effective insertion_mode (from CLI or default)
         MolSim.MC.sweep_npt_with_reactions!(st, p, rxn; Pext=P_TARGET, max_dlnV=max_dlnV,
                                             p_reaction=p_reaction, do_volume_move=do_vol,
                                             rebuild_every=st.N,
-                                            proposal_mode=proposal_mode, com_kernel_Δ=com_kernel_Δ)
+                                            proposal_mode=proposal_mode, com_kernel_Δ=com_kernel_Δ,
+                                            insertion_mode=effective_insertion_mode,
+                                            db_audit_callback=db_audit_enabled ? db_audit_callback : nothing)
     end
     timing["equilibration"] = time() - t_equil_start
     log_print(logger, "Equilibration completed in $(round(timing["equilibration"], digits=2)) seconds")
     
+    # DB audit: log and assert breakdowns if captured during equilibration
+    if db_audit_enabled && reaction_name == "A⇌D+F"
+        if db_audit_forward_captured[] && db_audit_forward_breakdown[] !== nothing
+            bd = db_audit_forward_breakdown[]
+            log_print(logger, "")
+            log_print(logger, "=" ^ 80)
+            log_print(logger, "DB AUDIT: First accepted FORWARD move (A→D+F)")
+            log_print(logger, "=" ^ 80)
+            log_print(logger, "Insertion mode used: $(bd.insertion_mode)")
+            log_print(logger, "Proposal mode used: $(bd.proposal_mode)")
+            log_print(logger, "N_before: $(bd.N_before)")
+            log_print(logger, "N_after: $(bd.N_after)")
+            log_print(logger, "V: $(round(bd.V, digits=6))")
+            log_print(logger, "ΔU: $(round(bd.ΔU, digits=6))")
+            log_print(logger, "β: $(round(bd.β, digits=10))")
+            log_print(logger, "log_combo: $(round(bd.log_combo, digits=10))")
+            log_print(logger, "logq_term: $(round(bd.logq_term, digits=10))")
+            log_print(logger, "vol_term: $(round(bd.vol_term, digits=10))")
+            log_print(logger, "logK_term: $(round(bd.logK_term, digits=10))")
+            log_print(logger, "log_prop_ratio: $(round(bd.log_prop_ratio, digits=10))")
+            log_print(logger, "logq terms (ν_i * log(q_i)):")
+            for (label, value) in bd.logq_terms
+                log_print(logger, "  $(label): $(round(value, digits=10))")
+            end
+            log_print(logger, "logα_total: $(round(bd.logα_total, digits=10))")
+            log_print(logger, "log_pi_ratio: $(round(bd.log_pi_ratio, digits=10))")
+            log_print(logger, "log_g_ratio: $(round(bd.log_g_ratio, digits=10))")
+            log_print(logger, "residual: $(round(bd.residual, digits=10))")
+            log_print(logger, "logα_used: $(round(bd.logα_used, digits=10))")
+            
+            # Assertions
+            # Check 1: logα_theory should equal logα_used (consistency check)
+            logα_theory = bd.log_pi_ratio + bd.log_g_ratio
+            theory_diff = abs(logα_theory - bd.logα_used)
+            if theory_diff >= 1e-10
+                error_msg = "DB_AUDIT_FAIL: |logα_theory - logα_used| = $(theory_diff) >= 1e-10 for forward move. logα_theory=$(logα_theory), logα_used=$(bd.logα_used), log_pi_ratio=$(bd.log_pi_ratio), log_g_ratio=$(bd.log_g_ratio)"
+                log_print(logger, "ERROR: $error_msg")
+                error(error_msg)
+            end
+            # Check 2: residual should be ≈ 0 (detailed balance check)
+            # residual = logα_used - logα_theory = logα_used - (log_pi_ratio + log_g_ratio)
+            if abs(bd.residual) >= 1e-8
+                error_msg = "DB_AUDIT_FAIL: |residual| = $(abs(bd.residual)) >= 1e-8 for forward move. residual=$(bd.residual), logα_used=$(bd.logα_used), logα_theory=$(logα_theory)"
+                log_print(logger, "ERROR: $error_msg")
+                error(error_msg)
+            end
+            log_print(logger, "DB_AUDIT_PASS: Forward move assertions passed")
+        end
+        
+        if db_audit_reverse_captured[] && db_audit_reverse_breakdown[] !== nothing
+            bd = db_audit_reverse_breakdown[]
+            log_print(logger, "")
+            log_print(logger, "=" ^ 80)
+            log_print(logger, "DB AUDIT: First accepted REVERSE move (D+F→A)")
+            log_print(logger, "=" ^ 80)
+            log_print(logger, "Insertion mode used: $(bd.insertion_mode)")
+            log_print(logger, "Proposal mode used: $(bd.proposal_mode)")
+            log_print(logger, "N_before: $(bd.N_before)")
+            log_print(logger, "N_after: $(bd.N_after)")
+            log_print(logger, "V: $(round(bd.V, digits=6))")
+            log_print(logger, "ΔU: $(round(bd.ΔU, digits=6))")
+            log_print(logger, "β: $(round(bd.β, digits=10))")
+            log_print(logger, "log_combo: $(round(bd.log_combo, digits=10))")
+            log_print(logger, "logq_term: $(round(bd.logq_term, digits=10))")
+            log_print(logger, "vol_term: $(round(bd.vol_term, digits=10))")
+            log_print(logger, "logK_term: $(round(bd.logK_term, digits=10))")
+            log_print(logger, "log_prop_ratio: $(round(bd.log_prop_ratio, digits=10))")
+            log_print(logger, "logq terms (ν_i * log(q_i)):")
+            for (label, value) in bd.logq_terms
+                log_print(logger, "  $(label): $(round(value, digits=10))")
+            end
+            log_print(logger, "logα_total: $(round(bd.logα_total, digits=10))")
+            log_print(logger, "log_pi_ratio: $(round(bd.log_pi_ratio, digits=10))")
+            log_print(logger, "log_g_ratio: $(round(bd.log_g_ratio, digits=10))")
+            log_print(logger, "residual: $(round(bd.residual, digits=10))")
+            log_print(logger, "logα_used: $(round(bd.logα_used, digits=10))")
+            
+            # Assertions
+            # Check 1: logα_theory should equal logα_used (consistency check)
+            logα_theory = bd.log_pi_ratio + bd.log_g_ratio
+            theory_diff = abs(logα_theory - bd.logα_used)
+            if theory_diff >= 1e-10
+                error_msg = "DB_AUDIT_FAIL: |logα_theory - logα_used| = $(theory_diff) >= 1e-10 for reverse move. logα_theory=$(logα_theory), logα_used=$(bd.logα_used), log_pi_ratio=$(bd.log_pi_ratio), log_g_ratio=$(bd.log_g_ratio)"
+                log_print(logger, "ERROR: $error_msg")
+                error(error_msg)
+            end
+            # Check 2: residual should be ≈ 0 (detailed balance check)
+            # residual = logα_used - logα_theory = logα_used - (log_pi_ratio + log_g_ratio)
+            if abs(bd.residual) >= 1e-8
+                error_msg = "DB_AUDIT_FAIL: |residual| = $(abs(bd.residual)) >= 1e-8 for reverse move. residual=$(bd.residual), logα_used=$(bd.logα_used), logα_theory=$(logα_theory)"
+                log_print(logger, "ERROR: $error_msg")
+                error(error_msg)
+            end
+            log_print(logger, "DB_AUDIT_PASS: Reverse move assertions passed")
+        end
+        
+        if !db_audit_forward_captured[] || !db_audit_reverse_captured[]
+            log_print(logger, "")
+            log_print(logger, "DB_AUDIT_WARNING: Not all moves captured during equilibration (forward=$(db_audit_forward_captured[]), reverse=$(db_audit_reverse_captured[])). Will check after production.")
+        end
+    end
+    
+    # Phase-boundary invariance test: log state fingerprint at end of equilibration
+    config_hash_equil, N_A_equil, N_D_equil, N_F_equil, V_equil, rho_total_equil, L_equil = 
+        compute_state_fingerprint(st, n_species, species_names)
+    rng_token_equil = get_rng_fingerprint_token(st.rng)
+    log_print(logger, "STATE_FINGERPRINT_EQUIL_END: seed=$seed sweep=$sweeps_equil N_A=$N_A_equil N_D=$N_D_equil N_F=$N_F_equil V=$(round(V_equil, digits=6)) rho_total=$(round(rho_total_equil, digits=6)) L=$(round(L_equil, digits=6)) hash=$config_hash_equil")
+    log_print(logger, "RNG_FINGERPRINT_EQUIL_END: token=($(rng_token_equil[1]), $(rng_token_equil[2]), $(rng_token_equil[3]), $(rng_token_equil[4]))")
+    
+    # Store run-time knobs for equilibration (should be identical to production)
+    knobs_equil = Dict(
+        "p_reaction" => p_reaction,
+        "proposal_mode" => proposal_mode,
+        "max_disp" => max_disp,
+        "max_dlnV" => max_dlnV,
+        "vol_move_every" => vol_move_every,
+        "rc" => p.rc,
+        "lj_model" => p.lj_model,
+        "use_lrc" => p.use_lrc,
+        "T" => T_TARGET,
+        "P" => P_TARGET,
+    )
+    
     # Production: accumulate data
+    # Phase-boundary invariance test: log state fingerprint at start of production and assert match
+    config_hash_prod, N_A_prod, N_D_prod, N_F_prod, V_prod, rho_total_prod, L_prod = 
+        compute_state_fingerprint(st, n_species, species_names)
+    rng_token_prod = get_rng_fingerprint_token(st.rng)
+    log_print(logger, "STATE_FINGERPRINT_PROD_START: seed=$seed sweep=0 N_A=$N_A_prod N_D=$N_D_prod N_F=$N_F_prod V=$(round(V_prod, digits=6)) rho_total=$(round(rho_total_prod, digits=6)) L=$(round(L_prod, digits=6)) hash=$config_hash_prod")
+    log_print(logger, "RNG_FINGERPRINT_PROD_START: token=($(rng_token_prod[1]), $(rng_token_prod[2]), $(rng_token_prod[3]), $(rng_token_prod[4]))")
+    
+    # Assert state fingerprint matches
+    mismatches = String[]
+    if config_hash_equil != config_hash_prod
+        push!(mismatches, "hash: equil=$config_hash_equil prod=$config_hash_prod")
+    end
+    if rng_token_equil != rng_token_prod
+        push!(mismatches, "RNG_token: equil=$rng_token_equil prod=$rng_token_prod")
+    end
+    if N_A_equil != N_A_prod
+        push!(mismatches, "N_A: equil=$N_A_equil prod=$N_A_prod")
+    end
+    if N_D_equil != N_D_prod
+        push!(mismatches, "N_D: equil=$N_D_equil prod=$N_D_prod")
+    end
+    if N_F_equil != N_F_prod
+        push!(mismatches, "N_F: equil=$N_F_equil prod=$N_F_prod")
+    end
+    if abs(V_equil - V_prod) > 1e-10
+        push!(mismatches, "V: equil=$V_equil prod=$V_prod")
+    end
+    if abs(rho_total_equil - rho_total_prod) > 1e-10
+        push!(mismatches, "rho_total: equil=$rho_total_equil prod=$rho_total_prod")
+    end
+    if abs(L_equil - L_prod) > 1e-10
+        push!(mismatches, "L: equil=$L_equil prod=$L_prod")
+    end
+    
+    # Store run-time knobs for production (should be identical)
+    knobs_prod = Dict(
+        "p_reaction" => p_reaction,
+        "proposal_mode" => proposal_mode,
+        "max_disp" => max_disp,
+        "max_dlnV" => max_dlnV,
+        "vol_move_every" => vol_move_every,
+        "rc" => p.rc,
+        "lj_model" => p.lj_model,
+        "use_lrc" => p.use_lrc,
+        "T" => T_TARGET,
+        "P" => P_TARGET,
+    )
+    
+    # Assert run-time knobs match
+    for (key, val_equil) in knobs_equil
+        val_prod = knobs_prod[key]
+        if val_equil != val_prod
+            push!(mismatches, "$key: equil=$val_equil prod=$val_prod")
+        end
+    end
+    
+    if !isempty(mismatches)
+        error_msg = "Phase-boundary invariance test FAILED. Mismatches: " * join(mismatches, "; ")
+        log_print(logger, "ERROR: $error_msg")
+        error(error_msg)
+    end
+    
     log_print(logger, "Production: $sweeps_prod sweeps...") 
     N_species_samples = Vector{Vector{Int}}()
     V_samples = Float64[]
@@ -336,9 +619,12 @@ function run_reaction_benchmark(reaction_name::String, logger::SimpleLogger;
     for sweep in 1:sweeps_prod
         do_vol = (sweep % vol_move_every == 0)
         trans_acc, vol_acc, vol_att, rxn_acc, rxn_att, rxn_fwd_att, rxn_fwd_acc, rxn_rev_att, rxn_rev_acc = 
+            # Use effective insertion_mode (from CLI or default)
             MolSim.MC.sweep_npt_with_reactions!(st, p, rxn; Pext=P_TARGET, max_dlnV=max_dlnV,
                                                 p_reaction=p_reaction, do_volume_move=do_vol,
-                                                rebuild_every=st.N)
+                                                rebuild_every=st.N,
+                                                insertion_mode=effective_insertion_mode,
+                                                db_audit_callback=db_audit_enabled ? db_audit_callback : nothing)
         
         translation_attempted_total += st.N
         translation_accepted_total += Int(round(trans_acc * st.N))
@@ -360,7 +646,109 @@ function run_reaction_benchmark(reaction_name::String, logger::SimpleLogger;
     end
     timing["production"] = time() - t_prod_start
     timing["total"] = time() - t_start
-    log_print(logger, "Production completed in $(round(timing["production"], digits=2)) seconds") 
+    log_print(logger, "Production completed in $(round(timing["production"], digits=2)) seconds")
+    
+    # DB audit: check if moves were captured during production (if not captured during equilibration)
+    if db_audit_enabled && reaction_name == "A⇌D+F"
+        if !db_audit_forward_captured[] && db_audit_forward_breakdown[] !== nothing
+            bd = db_audit_forward_breakdown[]
+            log_print(logger, "")
+            log_print(logger, "=" ^ 80)
+            log_print(logger, "DB AUDIT: First accepted FORWARD move (A→D+F) [captured during production]")
+            log_print(logger, "=" ^ 80)
+            log_print(logger, "Insertion mode used: $(bd.insertion_mode)")
+            log_print(logger, "Proposal mode used: $(bd.proposal_mode)")
+            log_print(logger, "N_before: $(bd.N_before)")
+            log_print(logger, "N_after: $(bd.N_after)")
+            log_print(logger, "V: $(round(bd.V, digits=6))")
+            log_print(logger, "ΔU: $(round(bd.ΔU, digits=6))")
+            log_print(logger, "β: $(round(bd.β, digits=10))")
+            log_print(logger, "log_combo: $(round(bd.log_combo, digits=10))")
+            log_print(logger, "logq_term: $(round(bd.logq_term, digits=10))")
+            log_print(logger, "vol_term: $(round(bd.vol_term, digits=10))")
+            log_print(logger, "logK_term: $(round(bd.logK_term, digits=10))")
+            log_print(logger, "log_prop_ratio: $(round(bd.log_prop_ratio, digits=10))")
+            log_print(logger, "logq terms (ν_i * log(q_i)):")
+            for (label, value) in bd.logq_terms
+                log_print(logger, "  $(label): $(round(value, digits=10))")
+            end
+            log_print(logger, "logα_total: $(round(bd.logα_total, digits=10))")
+            log_print(logger, "log_pi_ratio: $(round(bd.log_pi_ratio, digits=10))")
+            log_print(logger, "log_g_ratio: $(round(bd.log_g_ratio, digits=10))")
+            log_print(logger, "residual: $(round(bd.residual, digits=10))")
+            log_print(logger, "logα_used: $(round(bd.logα_used, digits=10))")
+            
+            # Assertions
+            # Check 1: logα_theory should equal logα_used (consistency check)
+            logα_theory = bd.log_pi_ratio + bd.log_g_ratio
+            theory_diff = abs(logα_theory - bd.logα_used)
+            if theory_diff >= 1e-10
+                error_msg = "DB_AUDIT_FAIL: |logα_theory - logα_used| = $(theory_diff) >= 1e-10 for forward move. logα_theory=$(logα_theory), logα_used=$(bd.logα_used), log_pi_ratio=$(bd.log_pi_ratio), log_g_ratio=$(bd.log_g_ratio)"
+                log_print(logger, "ERROR: $error_msg")
+                error(error_msg)
+            end
+            # Check 2: residual should be ≈ 0 (detailed balance check)
+            # residual = logα_used - logα_theory = logα_used - (log_pi_ratio + log_g_ratio)
+            if abs(bd.residual) >= 1e-8
+                error_msg = "DB_AUDIT_FAIL: |residual| = $(abs(bd.residual)) >= 1e-8 for forward move. residual=$(bd.residual), logα_used=$(bd.logα_used), logα_theory=$(logα_theory)"
+                log_print(logger, "ERROR: $error_msg")
+                error(error_msg)
+            end
+            log_print(logger, "DB_AUDIT_PASS: Forward move assertions passed")
+        end
+        
+        if !db_audit_reverse_captured[] && db_audit_reverse_breakdown[] !== nothing
+            bd = db_audit_reverse_breakdown[]
+            log_print(logger, "")
+            log_print(logger, "=" ^ 80)
+            log_print(logger, "DB AUDIT: First accepted REVERSE move (D+F→A) [captured during production]")
+            log_print(logger, "=" ^ 80)
+            log_print(logger, "Insertion mode used: $(bd.insertion_mode)")
+            log_print(logger, "Proposal mode used: $(bd.proposal_mode)")
+            log_print(logger, "N_before: $(bd.N_before)")
+            log_print(logger, "N_after: $(bd.N_after)")
+            log_print(logger, "V: $(round(bd.V, digits=6))")
+            log_print(logger, "ΔU: $(round(bd.ΔU, digits=6))")
+            log_print(logger, "β: $(round(bd.β, digits=10))")
+            log_print(logger, "log_combo: $(round(bd.log_combo, digits=10))")
+            log_print(logger, "logq_term: $(round(bd.logq_term, digits=10))")
+            log_print(logger, "vol_term: $(round(bd.vol_term, digits=10))")
+            log_print(logger, "logK_term: $(round(bd.logK_term, digits=10))")
+            log_print(logger, "log_prop_ratio: $(round(bd.log_prop_ratio, digits=10))")
+            log_print(logger, "logq terms (ν_i * log(q_i)):")
+            for (label, value) in bd.logq_terms
+                log_print(logger, "  $(label): $(round(value, digits=10))")
+            end
+            log_print(logger, "logα_total: $(round(bd.logα_total, digits=10))")
+            log_print(logger, "log_pi_ratio: $(round(bd.log_pi_ratio, digits=10))")
+            log_print(logger, "log_g_ratio: $(round(bd.log_g_ratio, digits=10))")
+            log_print(logger, "residual: $(round(bd.residual, digits=10))")
+            log_print(logger, "logα_used: $(round(bd.logα_used, digits=10))")
+            
+            # Assertions
+            # Check 1: logα_theory should equal logα_used (consistency check)
+            logα_theory = bd.log_pi_ratio + bd.log_g_ratio
+            theory_diff = abs(logα_theory - bd.logα_used)
+            if theory_diff >= 1e-10
+                error_msg = "DB_AUDIT_FAIL: |logα_theory - logα_used| = $(theory_diff) >= 1e-10 for reverse move. logα_theory=$(logα_theory), logα_used=$(bd.logα_used), log_pi_ratio=$(bd.log_pi_ratio), log_g_ratio=$(bd.log_g_ratio)"
+                log_print(logger, "ERROR: $error_msg")
+                error(error_msg)
+            end
+            # Check 2: residual should be ≈ 0 (detailed balance check)
+            # residual = logα_used - logα_theory = logα_used - (log_pi_ratio + log_g_ratio)
+            if abs(bd.residual) >= 1e-8
+                error_msg = "DB_AUDIT_FAIL: |residual| = $(abs(bd.residual)) >= 1e-8 for reverse move. residual=$(bd.residual), logα_used=$(bd.logα_used), logα_theory=$(logα_theory)"
+                log_print(logger, "ERROR: $error_msg")
+                error(error_msg)
+            end
+            log_print(logger, "DB_AUDIT_PASS: Reverse move assertions passed")
+        end
+        
+        if !db_audit_forward_captured[] || !db_audit_reverse_captured[]
+            log_print(logger, "")
+            log_print(logger, "DB_AUDIT_WARNING: Not all moves captured (forward=$(db_audit_forward_captured[]), reverse=$(db_audit_reverse_captured[]))")
+        end
+    end
     
     # Compute block-averaged means and uncertainties
     n_samples = length(N_species_samples)
@@ -595,6 +983,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
     local p_reaction = 0.1
     local rho_init = 0.75
     local proposal_mode = :com_insert  # Default to COM insertion
+    local insertion_mode_sym = nothing  # Will be set from CLI or default
+    local user_set_insertion_mode = false
     local logfile_path = nothing
     local smoke_mode = false
     local run_single_reaction = nothing  # None = run all, otherwise string with reaction name
@@ -617,6 +1007,12 @@ if abspath(PROGRAM_FILE) == @__FILE__
         elseif arg == "--blocks" && i < length(ARGS)
             block_size = parse(Int, ARGS[i+1])
             i += 2
+        elseif arg == "--p_reaction" && i < length(ARGS)
+            p_reaction = parse(Float64, ARGS[i+1])
+            i += 2
+        elseif arg == "--rho_init" && i < length(ARGS)
+            rho_init = parse(Float64, ARGS[i+1])
+            i += 2
         elseif arg == "--outdir" && i < length(ARGS)
             output_dir = ARGS[i+1]
             i += 2
@@ -626,12 +1022,38 @@ if abspath(PROGRAM_FILE) == @__FILE__
         elseif arg == "--reaction" && i < length(ARGS)
             run_single_reaction = ARGS[i+1]
             i += 2
+        elseif arg == "--insertion_mode" && i < length(ARGS)
+            insertion_mode_str = ARGS[i+1]
+            if insertion_mode_str == "anchored"
+                insertion_mode_sym = :anchored
+            elseif insertion_mode_str == "standard_remc"
+                insertion_mode_sym = :standard_remc
+            elseif insertion_mode_str == "uniform_only"
+                insertion_mode_sym = :uniform_only
+            else
+                error("Invalid --insertion_mode value: $insertion_mode_str. Must be one of: anchored, standard_remc, uniform_only")
+            end
+            user_set_insertion_mode = true
+            i += 2
         elseif arg == "--smoke"
             smoke_mode = true
             i += 1
         else
             i += 1
         end
+    end
+    
+    # Set default insertion_mode if user didn't specify
+    if !user_set_insertion_mode
+        # Default: standard_remc for A⇌D+F (Table 3.2 validation), anchored for others
+        # This will be applied per-reaction in run_reaction_benchmark
+        insertion_mode_sym = :standard_remc  # Default, will be used as-is for A⇌D+F, overridden for others
+    end
+    
+    # Validate insertion_mode
+    allowed_modes = [:anchored, :standard_remc, :uniform_only]
+    if insertion_mode_sym !== nothing && !(insertion_mode_sym in allowed_modes)
+        error("Invalid insertion_mode: $insertion_mode_sym. Must be one of: $allowed_modes")
     end
     
     # Check environment variables (override CLI)
@@ -658,6 +1080,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
     log_print(logger, "Seed: $seed")
     log_print(logger, "Equilibration sweeps: $sweeps_equil")
     log_print(logger, "Production sweeps: $sweeps_prod")
+    log_print(logger, "Insertion mode (CLI): $(insertion_mode_sym)")
+    log_print(logger, "User set insertion_mode: $(user_set_insertion_mode)")
     log_print(logger, "Sample every: $sample_every")
     log_print(logger, "Block size: $block_size")
     log_print(logger, "p_reaction: $p_reaction")
@@ -681,6 +1105,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
         per_rxn_logger = SimpleLogger(per_rxn_log_io)
         
         result, summary = run_reaction_benchmark(rxn_name, per_rxn_logger;
+                                                insertion_mode=insertion_mode_sym,
+                                                user_set_insertion_mode=user_set_insertion_mode,
                                                 seed=seed, sweeps_equil=50,
                                                 sweeps_prod=100, output_dir=output_dir,
                                                 sample_every=10, block_size=10,
@@ -722,6 +1148,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
             log_print(logger, "=" ^ 80)
             
             result, summary = run_reaction_benchmark(rxn_name, per_rxn_logger;
+                                                insertion_mode=insertion_mode_sym,
                                                     seed=seed, sweeps_equil=sweeps_equil,
                                                     sweeps_prod=sweeps_prod, output_dir=output_dir,
                                                     sample_every=sample_every, block_size=block_size,

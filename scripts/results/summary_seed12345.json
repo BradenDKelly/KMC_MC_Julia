@@ -1,0 +1,49 @@
+{
+  "meta": {
+    "sweeps_equil": 10000,
+    "total_runtime_seconds": 96.59299993515015,
+    "seed": 12345,
+    "timestamp": "2026-01-14T01:36:21.075",
+    "sweeps_prod": 10000
+  },
+  "parameters": {
+    "sweeps_equil": 10000,
+    "block_size": 50,
+    "sweeps_prod": 10000,
+    "sample_every": 10
+  },
+  "reactions": {
+    "A⇌D+F": {
+      "timing": {
+        "production": 44.813000202178955,
+        "initialization": 0.0,
+        "total": 89.93099999427795,
+        "equilibration": 45.04900002479553
+      },
+      "acceptance_rates": {
+        "translation": 0.5934785966775097,
+        "volume": 0.788,
+        "reaction": 0.05002800074668658
+      },
+      "reaction": "A⇌D+F",
+      "stderrs": {
+        "N_F": 0.01558676901801822,
+        "N_D": 0.01558676901801822,
+        "N_A": 0.015586769018019512
+      },
+      "targets": {
+        "N_F": 54.9,
+        "N_D": 54.9,
+        "ρ_total": 0.766,
+        "N_A": 345.1
+      },
+      "stderr_rho_total": 0.0009751287376924507,
+      "mean_rho_total": 0.7664919484183624,
+      "means": {
+        "N_F": 0.072,
+        "N_D": 0.072,
+        "N_A": 399.928
+      }
+    }
+  }
+}

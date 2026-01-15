@@ -2,12 +2,12 @@
   "meta": {
     "reaction": "A⇌C",
     "seed": 12345,
-    "timestamp": "2026-01-11T09:56:54.417"
+    "timestamp": "2026-01-12T19:47:52.363"
   },
   "run_lengths": {
-    "sweeps_equil": 100,
+    "sweeps_equil": 2000,
     "block_size": 50,
-    "sweeps_prod": 200,
+    "sweeps_prod": 4000,
     "sample_every": 10
   },
   "statepoint": {
@@ -20,7 +20,7 @@
   },
   "moves": {
     "max_dlnV": 0.01,
-    "p_reaction": 0.1,
+    "p_reaction": 1.0,
     "vol_move_every": 10,
     "max_disp": 0.1
   },
@@ -31,16 +31,22 @@
     }
   },
   "results": {
+    "timing": {
+      "production": 17.26800012588501,
+      "initialization": 0.0,
+      "total": 25.96500015258789,
+      "equilibration": 8.694999933242798
+    },
     "acceptance_rates": {
-      "translation": 0.599825,
-      "volume": 0.8,
-      "reaction": 1.0
+      "translation": 0.596546875,
+      "volume": 0.77,
+      "reaction": 0.238
     },
     "stderrs": {
-      "N_C": null,
-      "rho_total": null,
-      "V": null,
-      "N_A": null
+      "N_C": 1.431951715067836,
+      "rho_total": 0.002257147778892736,
+      "V": 1.7360202494119183,
+      "N_A": 1.4319517150678325
     },
     "targets": {
       "N_C": 102.3,
@@ -48,10 +54,10 @@
       "N_A": 297.7
     },
     "means": {
-      "N_C": 5.15,
-      "rho_total": 0.7521274003104291,
-      "V": 531.8247943565227,
-      "N_A": 394.85
+      "N_C": 96.28999999999999,
+      "rho_total": 0.7211616095088713,
+      "V": 554.6606956413137,
+      "N_A": 303.71
     }
   },
   "species": {
