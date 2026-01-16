@@ -2,9 +2,9 @@
 Table 3.2 Reaction Ensemble MC - Combined Summary
 ================================================================================
 Seed: 12345
-Equilibration: 50000 sweeps, Production: 10000 sweeps
-Total runtime: 385.44799995422363 seconds (6.424133332570394 minutes)
+Equilibration: 2000000 sweeps, Production: 2000000 sweeps
+Total runtime: 21364.97300004959 seconds (356.0828833341599 minutes)
 
 Reaction | N_A (mean±stderr) | N_product (mean±stderr) | ρ_total (mean±stderr) | Trans acc | Vol acc | Rxn acc | Time (s)
 --------------------------------------------------------------------------------
-A⇌D+F | 346.3 / 53.7 / 53.7 | 0.7694±0.0012 | 0.591 | 0.77 | 0.005 | 378.77
+A⇌2D | 373.4 / 53.1 | 0.766±0.0001 | 0.593 | 0.767 | 0.0 | 21358.9

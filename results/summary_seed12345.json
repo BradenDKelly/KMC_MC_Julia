@@ -1,48 +1,45 @@
 {
   "meta": {
-    "sweeps_equil": 50000,
-    "total_runtime_seconds": 385.44799995422363,
+    "sweeps_equil": 2000000,
+    "total_runtime_seconds": 21364.97300004959,
     "seed": 12345,
-    "timestamp": "2026-01-15T00:13:55.242",
-    "sweeps_prod": 10000
+    "timestamp": "2026-01-15T13:36:17.528",
+    "sweeps_prod": 2000000
   },
   "parameters": {
-    "sweeps_equil": 50000,
+    "sweeps_equil": 2000000,
     "block_size": 50,
-    "sweeps_prod": 10000,
+    "sweeps_prod": 2000000,
     "sample_every": 10
   },
   "reactions": {
-    "A⇌D+F": {
+    "A⇌2D": {
       "timing": {
-        "production": 64.46200013160706,
+        "production": 10852.319000005722,
         "initialization": 0.0,
-        "total": 378.76900005340576,
-        "equilibration": 314.23800015449524
+        "total": 21358.896000146866,
+        "equilibration": 10506.509000062943
       },
       "acceptance_rates": {
-        "translation": 0.590816195419492,
-        "volume": 0.77,
-        "reaction": 0.005
+        "translation": 0.5934762361150989,
+        "volume": 0.766525,
+        "reaction": 2.3e-5
       },
-      "reaction": "A⇌D+F",
+      "reaction": "A⇌2D",
       "stderrs": {
-        "N_F": 0.3036891589490114,
-        "N_D": 0.3036891589490114,
-        "N_A": 0.303689158949012
+        "N_D": 0.03229459749953408,
+        "N_A": 0.016147298749767263
       },
       "targets": {
-        "N_F": 54.9,
-        "N_D": 54.9,
+        "N_D": 55.7,
         "ρ_total": 0.766,
-        "N_A": 345.1
+        "N_A": 372.2
       },
-      "stderr_rho_total": 0.0011774801153087112,
-      "mean_rho_total": 0.7694118688209511,
+      "stderr_rho_total": 0.00011643272764545702,
+      "mean_rho_total": 0.7660412870732227,
       "means": {
-        "N_F": 53.735,
-        "N_D": 53.735,
-        "N_A": 346.265
+        "N_D": 53.125479999999996,
+        "N_A": 373.43726000000004
       }
     }
   }

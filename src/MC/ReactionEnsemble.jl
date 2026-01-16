@@ -963,36 +963,6 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
     # No proposal density corrections, no logK term for Smith–Tríska REMC
     logK_term = 0.0
     log_prop_ratio = 0.0
-    #   1. Select 1 A from N_A (lines 720-748): probability = 1/N_A
-    #   2. Delete A, store position as r0 = deleted_positions[1]
-    #   3. Generate random unit vector u using Marsaglia's method (lines 781-794):
-    #      - Sample x, y uniformly in [-1, 1] until x²+y² < 1
-    #      - This gives uniform distribution on unit sphere: density = 1/(4π)
-    #   4. Place D at rD = wrap(r0 + 0.5*s*u), F at rF = wrap(r0 - 0.5*s*u) 
-    #      where s = reaction_separation (constant, deterministic)
-    #   5. Positions are deterministic given u and r0
-    #   q_forward = (1/N_A) * (1/(4π))
-    # 
-    # Reverse (D+F→A):
-    #   1. Select 1 D from N_D (lines 720-748): probability = 1/N_D
-    #   2. Select 1 F from N_F (lines 720-748): probability = 1/N_F
-    #   3. Delete D and F, store positions: deleted_positions[1] = D's position, deleted_positions[2] = F's position
-    #   4. Insert A anchored at deleted_positions[1] (D's position) - deterministic (lines 814-824)
-    #   q_reverse = (1/N_D) * (1/N_F) * 1 = 1/(N_D * N_F)
-    # 
-    # Detailed balance: π(x) * g(x→y) * α(x→y) = π(y) * g(y→x) * α(y→x)
-    #   log(α(x→y)) = log(π(y)) - log(π(x)) + log(g(y→x)) - log(g(x→y))
-    #   = log_pi_ratio + log_g_ratio
-    #   where log_g_ratio = log(g(y→x)) - log(g(x→y)) = log(q_reverse) - log(q_forward)
-    # 
-    # For forward move (x = state before, y = state after):
-    #   g(x→y) = q_forward (uses counts_before)
-    #   g(y→x) = q_reverse (uses counts_after, which is state y)
-    # For reverse move (x = state before, y = state after):
-    #   g(x→y) = q_reverse (uses counts_before)
-    #   g(y→x) = q_forward (uses counts_after, which is state y)
-    # No proposal-density or Hastings corrections for Smith–Tríska REMC.
-    log_prop_ratio = 0.0
     
     # Check for NaN/Inf in log_acc
     log_acc_valid = isfinite(log_acc)
@@ -1007,16 +977,14 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         # Decompose acceptance into terms
         log_boltz = -p.β * ΔU  # Boltzmann term
         # vol_term, logq_term, fact_term already computed above
-        # logK_term already computed above
-        # log_prop_ratio already computed above
         logα_total = log_acc
         
         # A⇌D+F specific term print (first 50 attempts only)
         if reaction.label == "A⇌D+F" && _react_debug_counter[] <= 50
-            println("REACT_DEBUG_TERM[$(_react_debug_counter[])]: ΔU=$(ΔU) log_boltz=$(log_boltz) logK=$(logK_term) log_combo=$(fact_term) logq=$(logq_term) vol=$(vol_term) log_prop=$(log_prop_ratio) logα=$(logα_total)")
+            println("REACT_DEBUG_TERM[$(_react_debug_counter[])]: ΔU=$(ΔU) log_boltz=$(log_boltz) log_combo=$(fact_term) logq=$(logq_term) vol=$(vol_term) logα=$(logα_total)")
             
             # Non-energy acceptance bias check
-            nonenergy_forward = logK_term + fact_term + logq_term + vol_term + log_prop_ratio
+            nonenergy_forward = fact_term + logq_term + vol_term
             V = st.L^3
             ln_V = log(V)
             Δν = ΔN  # ΔN = sum(νeff) for this direction
@@ -1047,7 +1015,7 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
             rejection_reason_final = "nan_or_inf"
         end
         
-        println("REACT_DEBUG[$(_react_debug_counter[])]: direction=$direction, current=$counts_str, proposed=$counts_after_str, ΔU=$(round(ΔU, digits=6)), log_boltz=$(round(log_boltz, digits=6)), log_K_term=$(round(logK_term, digits=6)), log_combo=$(round(fact_term, digits=6)), logq_term=$(round(logq_term, digits=6)), vol_term=$(round(vol_term, digits=6)), log_prop_ratio=$(round(log_prop_ratio, digits=6)), logα_total=$(round(logα_total, digits=6)), rejected=$rejection_reason_final, status=$accepted_status_preview")
+        println("REACT_DEBUG[$(_react_debug_counter[])]: direction=$direction, current=$counts_str, proposed=$counts_after_str, ΔU=$(round(ΔU, digits=6)), log_boltz=$(round(log_boltz, digits=6)), log_combo=$(round(fact_term, digits=6)), logq_term=$(round(logq_term, digits=6)), vol_term=$(round(vol_term, digits=6)), logα_total=$(round(logα_total, digits=6)), rejected=$rejection_reason_final, status=$accepted_status_preview")
         
         # Detailed balance antisymmetry check for A⇌D+F (first 50 attempts only)
         if reaction.label == "A⇌D+F" && _react_debug_counter[] <= 50 && feasible && energy_valid && log_acc_valid
@@ -1056,13 +1024,11 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
             # For detailed balance, logR_reverse should be the negation of logR_forward (term-by-term)
             # Negate each forward term to get the reverse term
             log_boltz_rev = -log_boltz
-            logK_term_rev = -logK_term
             log_combo_rev = -fact_term  # fact_term is the combinatorial term
             logq_term_rev = -logq_term
             vol_term_rev = -vol_term
-            log_prop_ratio_rev = -log_prop_ratio
             
-            logR_reverse_check = log_boltz_rev + logK_term_rev + log_combo_rev + logq_term_rev + vol_term_rev + log_prop_ratio_rev
+            logR_reverse_check = log_boltz_rev + log_combo_rev + logq_term_rev + vol_term_rev
             
             # Check detailed balance: logR_forward + logR_reverse_check should be ≈ 0
             db_sum = logR_forward + logR_reverse_check
@@ -1073,13 +1039,11 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
             if abs(db_sum) > db_tolerance
                 # Print term mismatches (each term + its negation should sum to 0)
                 boltz_mismatch = log_boltz + log_boltz_rev
-                K_mismatch = logK_term + logK_term_rev
                 combo_mismatch = fact_term + log_combo_rev
                 q_mismatch = logq_term + logq_term_rev
                 vol_mismatch = vol_term + vol_term_rev
-                prop_mismatch = log_prop_ratio + log_prop_ratio_rev
                 
-                println("REACT_DEBUG_DB[$(_react_debug_counter[])]: term_mismatches boltz=$(round(boltz_mismatch, digits=10)) K=$(round(K_mismatch, digits=10)) combo=$(round(combo_mismatch, digits=10)) q=$(round(q_mismatch, digits=10)) vol=$(round(vol_mismatch, digits=10)) prop=$(round(prop_mismatch, digits=10))")
+                println("REACT_DEBUG_DB[$(_react_debug_counter[])]: term_mismatches boltz=$(round(boltz_mismatch, digits=10)) combo=$(round(combo_mismatch, digits=10)) q=$(round(q_mismatch, digits=10)) vol=$(round(vol_mismatch, digits=10))")
             end
             
             # Paired move detailed balance check: compute actual reverse acceptance from current state
@@ -1135,14 +1099,7 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
                         end
                     end
                     
-                    # Reverse logK term
-                    logK_term_reverse = reaction.logK
-                    
-                    # Reverse proposal ratio (would need to recompute, but for now use negation)
-                    # TODO: Actually compute reverse proposal ratio from current state
-                    log_prop_ratio_reverse = -log_prop_ratio  # Approximation
-                    
-                    logα_reverse_paired = log_boltz_reverse + vol_term_reverse + logq_term_reverse + fact_term_reverse + logK_term_reverse + log_prop_ratio_reverse
+                    logα_reverse_paired = log_boltz_reverse + vol_term_reverse + logq_term_reverse + fact_term_reverse
                     
                     db_paired_sum = logR_forward + logα_reverse_paired
                     
@@ -1218,8 +1175,8 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
                 _equil_accept_counter[][direction] += 1
                 # Compute terms (already computed above)
                 log_boltz = -p.β * ΔU
-                # vol_term, logq_term, fact_term, logK_term, log_prop_ratio already computed above
-                println("EQUIL_ACCEPT_TERM[$(_equil_accept_counter[][direction])][$direction]: ΔU=$(round(ΔU, digits=6)), -βΔU=$(round(log_boltz, digits=6)), log_combo=$(round(fact_term, digits=6)), logq_term=$(round(logq_term, digits=6)), vol_term=$(round(vol_term, digits=6)), logK_term=$(round(logK_term, digits=6)), logα_total=$(round(log_acc, digits=6))")
+                # vol_term, logq_term, fact_term already computed above
+                println("EQUIL_ACCEPT_TERM[$(_equil_accept_counter[][direction])][$direction]: ΔU=$(round(ΔU, digits=6)), -βΔU=$(round(log_boltz, digits=6)), log_combo=$(round(fact_term, digits=6)), logq_term=$(round(logq_term, digits=6)), vol_term=$(round(vol_term, digits=6)), logα_total=$(round(log_acc, digits=6))")
             end
         end
         
@@ -1245,8 +1202,7 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
                 println("  log_combo=$(round(fact_term, digits=6)) (N_before=[$counts_str])")
                 println("  logq_term=$(round(logq_term, digits=6))")
                 println("  vol_term=$(round(vol_term, digits=6)) (V=$(round(V, digits=4)), Δν=$Δν)")
-                println("  logK_term=$(round(logK_term, digits=6))")
-                println("  log_prop_ratio=$(round(log_prop_ratio, digits=6))")
+                # logK_term/log_prop_ratio are zero for Smith–Tríska REMC
                 println("  logα_total=$(round(log_acc, digits=6))")
                 println("  log(u)=$(round(log_u, digits=6)) (u=$(round(u_metropolis, digits=6)))")
             end
@@ -1321,14 +1277,13 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
     db_audit_enabled = get(ENV, "DB_AUDIT", "0") == "1"
     if db_audit_enabled && db_audit_callback !== nothing && reaction.label == "A⇌D+F" && metropolis_accepted && energy_valid && log_acc_valid
         # DB_AUDIT sanity check: ensure all required variables are finite (not NaN/Inf)
-        if !isfinite(ΔU_term) || !isfinite(logq_term) || !isfinite(vol_term) || !isfinite(fact_term) || 
-           !isfinite(logK_term) || !isfinite(log_prop_ratio) || !isfinite(log_acc)
-            error("DB_AUDIT_FAIL: Non-finite values detected. ΔU_term=$(ΔU_term), logq_term=$(logq_term), vol_term=$(vol_term), fact_term=$(fact_term), logK_term=$(logK_term), log_prop_ratio=$(log_prop_ratio), log_acc=$(log_acc)")
+        if !isfinite(ΔU_term) || !isfinite(logq_term) || !isfinite(vol_term) || !isfinite(fact_term) || !isfinite(log_acc)
+            error("DB_AUDIT_FAIL: Non-finite values detected. ΔU_term=$(ΔU_term), logq_term=$(logq_term), vol_term=$(vol_term), fact_term=$(fact_term), log_acc=$(log_acc)")
         end
         
         # Compute breakdown components
-        # log_pi_ratio = log π(y) - log π(x) = ΔU_term + logq_term + vol_term + fact_term + logK_term
-        log_pi_ratio = ΔU_term + logq_term + vol_term + fact_term + logK_term
+        # log_pi_ratio = log π(y) - log π(x) = ΔU_term + logq_term + vol_term + fact_term
+        log_pi_ratio = ΔU_term + logq_term + vol_term + fact_term
         # log_g_ratio = 0.0 for Smith–Tríska REMC (no proposal-density corrections)
         log_g_ratio = 0.0
         # logα_theory = log_pi_ratio + log_g_ratio (theoretical acceptance from detailed balance)
@@ -1342,7 +1297,7 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         # This checks that the breakdown components sum correctly
         theory_diff = abs(logα_theory - logα_used)
         if theory_diff >= 1e-10
-            error("DB_AUDIT_FAIL: |logα_theory - logα_used| = $(theory_diff) >= 1e-10. logα_theory=$(logα_theory), logα_used=$(logα_used), log_pi_ratio=$(log_pi_ratio), log_g_ratio=$(log_g_ratio), ΔU_term=$(ΔU_term), logq_term=$(logq_term), vol_term=$(vol_term), fact_term=$(fact_term), logK_term=$(logK_term), log_prop_ratio=$(log_prop_ratio)")
+            error("DB_AUDIT_FAIL: |logα_theory - logα_used| = $(theory_diff) >= 1e-10. logα_theory=$(logα_theory), logα_used=$(logα_used), log_pi_ratio=$(log_pi_ratio), log_g_ratio=$(log_g_ratio), ΔU_term=$(ΔU_term), logq_term=$(logq_term), vol_term=$(vol_term), fact_term=$(fact_term))")
         end
         
         # Create breakdown struct

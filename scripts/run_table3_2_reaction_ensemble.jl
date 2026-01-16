@@ -430,19 +430,12 @@ function run_reaction_benchmark(reaction_name::String, logger::SimpleLogger;
             log_print(logger, "ΔU: $(round(bd.ΔU, digits=6))")
             log_print(logger, "β: $(round(bd.β, digits=10))")
             log_print(logger, "log_combo: $(round(bd.log_combo, digits=10))")
-            log_print(logger, "logq_term: $(round(bd.logq_term, digits=10))")
             log_print(logger, "vol_term: $(round(bd.vol_term, digits=10))")
-            log_print(logger, "logK_term: $(round(bd.logK_term, digits=10))")
-            log_print(logger, "log_prop_ratio: $(round(bd.log_prop_ratio, digits=10))")
             log_print(logger, "logq terms (ν_i * log(q_i)):")
             for (label, value) in bd.logq_terms
                 log_print(logger, "  $(label): $(round(value, digits=10))")
             end
-            log_print(logger, "logα_total: $(round(bd.logα_total, digits=10))")
-            log_print(logger, "log_pi_ratio: $(round(bd.log_pi_ratio, digits=10))")
-            log_print(logger, "log_g_ratio: $(round(bd.log_g_ratio, digits=10))")
-            log_print(logger, "residual: $(round(bd.residual, digits=10))")
-            log_print(logger, "logα_used: $(round(bd.logα_used, digits=10))")
+            log_print(logger, "logα: $(round(bd.logα_total, digits=10))")
             
             # Assertions
             # Check 1: logα_theory should equal logα_used (consistency check)
@@ -477,19 +470,12 @@ function run_reaction_benchmark(reaction_name::String, logger::SimpleLogger;
             log_print(logger, "ΔU: $(round(bd.ΔU, digits=6))")
             log_print(logger, "β: $(round(bd.β, digits=10))")
             log_print(logger, "log_combo: $(round(bd.log_combo, digits=10))")
-            log_print(logger, "logq_term: $(round(bd.logq_term, digits=10))")
             log_print(logger, "vol_term: $(round(bd.vol_term, digits=10))")
-            log_print(logger, "logK_term: $(round(bd.logK_term, digits=10))")
-            log_print(logger, "log_prop_ratio: $(round(bd.log_prop_ratio, digits=10))")
             log_print(logger, "logq terms (ν_i * log(q_i)):")
             for (label, value) in bd.logq_terms
                 log_print(logger, "  $(label): $(round(value, digits=10))")
             end
-            log_print(logger, "logα_total: $(round(bd.logα_total, digits=10))")
-            log_print(logger, "log_pi_ratio: $(round(bd.log_pi_ratio, digits=10))")
-            log_print(logger, "log_g_ratio: $(round(bd.log_g_ratio, digits=10))")
-            log_print(logger, "residual: $(round(bd.residual, digits=10))")
-            log_print(logger, "logα_used: $(round(bd.logα_used, digits=10))")
+            log_print(logger, "logα: $(round(bd.logα_total, digits=10))")
             
             # Assertions
             # Check 1: logα_theory should equal logα_used (consistency check)
@@ -664,19 +650,12 @@ function run_reaction_benchmark(reaction_name::String, logger::SimpleLogger;
             log_print(logger, "ΔU: $(round(bd.ΔU, digits=6))")
             log_print(logger, "β: $(round(bd.β, digits=10))")
             log_print(logger, "log_combo: $(round(bd.log_combo, digits=10))")
-            log_print(logger, "logq_term: $(round(bd.logq_term, digits=10))")
             log_print(logger, "vol_term: $(round(bd.vol_term, digits=10))")
-            log_print(logger, "logK_term: $(round(bd.logK_term, digits=10))")
-            log_print(logger, "log_prop_ratio: $(round(bd.log_prop_ratio, digits=10))")
             log_print(logger, "logq terms (ν_i * log(q_i)):")
             for (label, value) in bd.logq_terms
                 log_print(logger, "  $(label): $(round(value, digits=10))")
             end
-            log_print(logger, "logα_total: $(round(bd.logα_total, digits=10))")
-            log_print(logger, "log_pi_ratio: $(round(bd.log_pi_ratio, digits=10))")
-            log_print(logger, "log_g_ratio: $(round(bd.log_g_ratio, digits=10))")
-            log_print(logger, "residual: $(round(bd.residual, digits=10))")
-            log_print(logger, "logα_used: $(round(bd.logα_used, digits=10))")
+            log_print(logger, "logα: $(round(bd.logα_total, digits=10))")
             
             # Assertions
             # Check 1: logα_theory should equal logα_used (consistency check)
@@ -711,19 +690,12 @@ function run_reaction_benchmark(reaction_name::String, logger::SimpleLogger;
             log_print(logger, "ΔU: $(round(bd.ΔU, digits=6))")
             log_print(logger, "β: $(round(bd.β, digits=10))")
             log_print(logger, "log_combo: $(round(bd.log_combo, digits=10))")
-            log_print(logger, "logq_term: $(round(bd.logq_term, digits=10))")
             log_print(logger, "vol_term: $(round(bd.vol_term, digits=10))")
-            log_print(logger, "logK_term: $(round(bd.logK_term, digits=10))")
-            log_print(logger, "log_prop_ratio: $(round(bd.log_prop_ratio, digits=10))")
             log_print(logger, "logq terms (ν_i * log(q_i)):")
             for (label, value) in bd.logq_terms
                 log_print(logger, "  $(label): $(round(value, digits=10))")
             end
-            log_print(logger, "logα_total: $(round(bd.logα_total, digits=10))")
-            log_print(logger, "log_pi_ratio: $(round(bd.log_pi_ratio, digits=10))")
-            log_print(logger, "log_g_ratio: $(round(bd.log_g_ratio, digits=10))")
-            log_print(logger, "residual: $(round(bd.residual, digits=10))")
-            log_print(logger, "logα_used: $(round(bd.logα_used, digits=10))")
+            log_print(logger, "logα: $(round(bd.logα_total, digits=10))")
             
             # Assertions
             # Check 1: logα_theory should equal logα_used (consistency check)
@@ -1148,7 +1120,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
             log_print(logger, "=" ^ 80)
             
             result, summary = run_reaction_benchmark(rxn_name, per_rxn_logger;
-                                                insertion_mode=insertion_mode_sym,
+                                                    insertion_mode=insertion_mode_sym,
+                                                    user_set_insertion_mode=user_set_insertion_mode,
                                                     seed=seed, sweeps_equil=sweeps_equil,
                                                     sweeps_prod=sweeps_prod, output_dir=output_dir,
                                                     sample_every=sample_every, block_size=block_size,
