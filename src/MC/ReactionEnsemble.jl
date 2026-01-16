@@ -178,6 +178,132 @@ function delete_particle!(st::LJState, idx::Int)
 end
 
 """
+    _pair_energy_from_positions(xi, yi, zi, xj, yj, zj, L, L_half, p, type_i, type_j)
+
+Compute pair energy between two positions with minimum-image PBC.
+Uses mixed parameters if multicomponent.
+"""
+@inline function _pair_energy_from_positions(
+    xi::Float64, yi::Float64, zi::Float64,
+    xj::Float64, yj::Float64, zj::Float64,
+    L::Float64, L_half::Float64,
+    p::LJParams, type_i::Int, type_j::Int
+)::Float64
+    dx = xj - xi
+    dy = yj - yi
+    dz = zj - zi
+    if dx > L_half
+        dx -= L
+    elseif dx < -L_half
+        dx += L
+    end
+    if dy > L_half
+        dy -= L
+    elseif dy < -L_half
+        dy += L
+    end
+    if dz > L_half
+        dz -= L
+    elseif dz < -L_half
+        dz += L
+    end
+    r2 = dx * dx + dy * dy + dz * dz
+    if p.n_types > 1
+        return lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
+    else
+        return lj_potential(r2, p)
+    end
+end
+
+"""
+    _energy_contrib_indices(indices, pos, types, N, L, p)::Float64
+
+Compute the total pair energy contributions involving the given indices.
+Counts each pair exactly once (pairs where both indices are in the set
+are included once).
+"""
+function _energy_contrib_indices(
+    indices::Vector{Int},
+    pos::Matrix{Float64},
+    types::Vector{Int},
+    N::Int,
+    L::Float64,
+    p::LJParams
+)::Float64
+    if isempty(indices)
+        return 0.0
+    end
+    L_half = 0.5 * L
+    energy = 0.0
+    @inbounds for idx in indices
+        xi = pos[1, idx]
+        yi = pos[2, idx]
+        zi = pos[3, idx]
+        type_i = types[idx]
+        for j in 1:N
+            if j != idx
+                energy += _pair_energy_from_positions(
+                    xi, yi, zi,
+                    pos[1, j], pos[2, j], pos[3, j],
+                    L, L_half, p, type_i, types[j]
+                )
+            end
+        end
+    end
+    # Correct double-counting for pairs within indices
+    if length(indices) > 1
+        @inbounds for a in 1:(length(indices) - 1)
+            i = indices[a]
+            xi = pos[1, i]
+            yi = pos[2, i]
+            zi = pos[3, i]
+            type_i = types[i]
+            for b in (a + 1):length(indices)
+                j = indices[b]
+                energy -= _pair_energy_from_positions(
+                    xi, yi, zi,
+                    pos[1, j], pos[2, j], pos[3, j],
+                    L, L_half, p, type_i, types[j]
+                )
+            end
+        end
+    end
+    return energy
+end
+
+"""
+    _energy_contrib_single(i, pos, types, N, L, p, type_override)::Float64
+
+Compute the total pair energy of a single particle i with all others,
+optionally overriding its type.
+"""
+function _energy_contrib_single(
+    i::Int,
+    pos::Matrix{Float64},
+    types::Vector{Int},
+    N::Int,
+    L::Float64,
+    p::LJParams,
+    type_override::Int
+)::Float64
+    L_half = 0.5 * L
+    xi = pos[1, i]
+    yi = pos[2, i]
+    zi = pos[3, i]
+    energy = 0.0
+    @inbounds for j in 1:N
+        if j != i
+            energy += _pair_energy_from_positions(
+                xi, yi, zi,
+                pos[1, j], pos[2, j], pos[3, j],
+                L, L_half, p, type_override, types[j]
+            )
+        end
+    end
+    return energy
+end
+
+"""
     compute_com_from_indices(pos::Matrix{Float64}, indices::Vector{Int}, L::Float64)::SVector{3,Float64}
 
 Compute center of mass (COM) of particles at given indices, using minimum image convention.
@@ -369,19 +495,16 @@ function alchemical_flip_trial!(st::LJState, p::LJParams, reaction::Reaction, di
         new_type = reactant_id
     end
     
-    # Compute energy before flip
-    U_before = total_energy(st, p)
+    # Compute energy change from local interactions only
+    N = st.N
+    L = st.L
+    U_before = _energy_contrib_single(particle_idx, st.pos, st.types, N, L, p, old_type)
     
     # Perform the type flip
     st.types[particle_idx] = new_type
     
-    # Rebuild cell list (types changed but positions didn't)
-    L = st.L
-    st.cl = CellList(st.N, L, p.rc)
-    rebuild_cells!(st)
-    
-    # Compute energy after flip
-    U_after = total_energy(st, p)
+    # Compute energy after flip (positions unchanged, only type changed)
+    U_after = _energy_contrib_single(particle_idx, st.pos, st.types, N, L, p, new_type)
     ΔU = U_after - U_before
     
     # MINIMAL ACCEPTANCE: ln_acc = -β*ΔU + (logq_new - logq_old) + logK0
@@ -404,8 +527,6 @@ function alchemical_flip_trial!(st::LJState, p::LJParams, reaction::Reaction, di
     else
         # Reject: restore old type
         st.types[particle_idx] = old_type
-        st.cl = CellList(st.N, L, p.rc)
-        rebuild_cells!(st)
     end
     
     return accepted
@@ -553,7 +674,6 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
             end
             
             # Store state
-            U_before = total_energy(st, p)
             N_before = st.N
             pos_old = copy(st.pos)
             types_old = copy(st.types)
@@ -587,20 +707,20 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
             # Randomly select one particle to delete
             particle_to_delete = rand(st.rng, species_indices)
             
+            # Energy contribution from deleted particle (before deletion)
+            old_contrib = _energy_contrib_indices([particle_to_delete], pos_old, types_old, N_before, L, p)
+            
             # Delete the particle
             delete_particle!(st, particle_to_delete)
             
             # Insert one product uniformly
             pos_insert = SVector{3,Float64}(rand(st.rng) * L, rand(st.rng) * L, rand(st.rng) * L)
             insert_particle!(st, pos_insert, species_to_insert)
+            inserted_index = st.N
             
-            # Rebuild cell list
-            st.cl = CellList(st.N, L, p.rc)
-            rebuild_cells!(st)
-            
-            # Compute energy after
-            U_after = total_energy(st, p)
-            ΔU = U_after - U_before
+            # Compute energy change from local contributions
+            new_contrib = _energy_contrib_indices([inserted_index], st.pos, st.types, st.N, L, p)
+            ΔU = new_contrib - old_contrib
             
             # Count species after
             counts_after = count_species(st, n_species)
@@ -645,8 +765,6 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
                 st.N = N_before
                 st.pos = pos_old
                 st.types = types_old
-                st.cl = CellList(N_before, L, p.rc)
-                rebuild_cells!(st)
                 return (false, false, true, false)
             end
             
@@ -665,6 +783,9 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
                 end
             end
             
+            # Rebuild cell list after accepted move
+            st.cl = CellList(st.N, L, p.rc)
+            rebuild_cells!(st)
             return (metropolis_accepted, metropolis_accepted, true, false)
         end
     end
@@ -728,9 +849,6 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         end
     end
     
-    # Compute energy before reaction
-    U_before = total_energy(st, p)
-    
     # Store old state for rejection
     N_before = st.N
     pos_old = copy(st.pos)
@@ -778,6 +896,9 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
     for idx in particles_to_delete
         push!(deleted_positions, SVector{3,Float64}(pos_old[1, idx], pos_old[2, idx], pos_old[3, idx]))
     end
+    
+    # Energy contributions from deleted particles (before deletion)
+    old_contrib = _energy_contrib_indices(particles_to_delete, pos_old, types_old, N_before, L, p)
     
     # Delete in reverse sorted order to avoid index shifts
     sort!(particles_to_delete, rev=true)
@@ -879,23 +1000,24 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
     end
     
     # Insert products in stoichiometric order (using νeff)
+    inserted_indices = Int[]
     insert_idx = 1
     for (species_id, ν) in enumerate(νeff)
         if ν > 0
             for _ in 1:ν
                 insert_particle!(st, positions_to_insert[insert_idx], species_id)
+                push!(inserted_indices, st.N)
                 insert_idx += 1
             end
         end
     end
     
-    # Rebuild cell list for new configuration
-    st.cl = CellList(st.N, L, p.rc)
-    rebuild_cells!(st)
-    
-    # Compute energy after reaction
-    U_after = total_energy(st, p)
-    ΔU = U_after - U_before
+    # Compute energy change from local contributions
+    new_contrib = _energy_contrib_indices(inserted_indices, st.pos, st.types, st.N, L, p)
+    ΔU = new_contrib - old_contrib
+    if p.use_lrc
+        ΔU += Float64(st.N - N_before) * p.lrc_u_per_particle
+    end
     
     # Check for NaN/Inf in energy
     energy_valid = isfinite(ΔU)
@@ -1132,8 +1254,6 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
             st.N = N_before
             st.pos = pos_old
             st.types = types_old
-            st.cl = CellList(N_before, L, p.rc)
-            rebuild_cells!(st)
             return (false, false, true, false)
         end
     end
@@ -1148,8 +1268,6 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         st.N = N_before
         st.pos = pos_old
         st.types = types_old
-        st.cl = CellList(N_before, L, p.rc)
-        rebuild_cells!(st)
         return (false, false, true, false)  # (metropolis_accepted=false, committed=false, feasible=true, invariant_failed=false)
     else
         u_metropolis = rand(st.rng)
@@ -1226,8 +1344,6 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         st.N = N_before
         st.pos = pos_old
         st.types = types_old
-        st.cl = CellList(N_before, L, p.rc)
-        rebuild_cells!(st)
         return (false, false, true, false)  # (metropolis_accepted=false, committed=false, feasible=true, invariant_failed=false)
     end
     
@@ -1258,10 +1374,12 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         st.N = N_before
         st.pos = pos_old
         st.types = types_old
-        st.cl = CellList(N_before, L, p.rc)
-        rebuild_cells!(st)
         return (metropolis_accepted, false, true, true)  # (metropolis_accepted, committed=false, feasible=true, invariant_failed=true)
     end
+    
+    # Rebuild cell list after accepted move
+    st.cl = CellList(st.N, L, p.rc)
+    rebuild_cells!(st)
     
     # State update is valid and committed - increment committed counter
     if counters !== nothing && reaction.label == "A⇌D+F"

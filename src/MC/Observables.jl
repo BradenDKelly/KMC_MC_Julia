@@ -2,6 +2,8 @@
 Observable computation utilities (energy, virial, pressure).
 """
 
+using Base.Threads
+
 """
     lj_pair_u_from_r2(r2, p)::Float64
 
@@ -90,47 +92,96 @@ function total_energy(st, p)::Float64
     energy = 0.0
     N = st.N
     L = st.L
+    L_half = 0.5 * L
     rc2 = p.rc2
     pos = st.pos
     types = st.types
+    use_mixed = p.n_types > 1
     
-    @inbounds for i in 1:N
-        type_i = types[i]
-        for j in (i+1):N
-            type_j = types[j]
-            
-            # Compute distance vector
-            dr_x = pos[1, j] - pos[1, i]
-            dr_y = pos[2, j] - pos[2, i]
-            dr_z = pos[3, j] - pos[3, i]
-            
-            # Apply minimum image convention
-            L_half = L / 2.0
-            if dr_x > L_half
-                dr_x = dr_x - L
-            elseif dr_x < -L_half
-                dr_x = dr_x + L
+    if nthreads() > 1 && N >= 200
+        sums = zeros(Float64, nthreads())
+        @threads for i in 1:N
+            tid = threadid()
+            type_i = types[i]
+            local_sum = 0.0
+            for j in (i+1):N
+                type_j = types[j]
+                
+                # Compute distance vector
+                dr_x = pos[1, j] - pos[1, i]
+                dr_y = pos[2, j] - pos[2, i]
+                dr_z = pos[3, j] - pos[3, i]
+                
+                # Apply minimum image convention
+                if dr_x > L_half
+                    dr_x = dr_x - L
+                elseif dr_x < -L_half
+                    dr_x = dr_x + L
+                end
+                if dr_y > L_half
+                    dr_y = dr_y - L
+                elseif dr_y < -L_half
+                    dr_y = dr_y + L
+                end
+                if dr_z > L_half
+                    dr_z = dr_z - L
+                elseif dr_z < -L_half
+                    dr_z = dr_z + L
+                end
+                
+                r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
+                
+                if r2 < rc2 && r2 > 0.0
+                    # Use mixed parameters for multicomponent
+                    if use_mixed
+                        local_sum += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
+                    else
+                        # Single-component backward compatibility
+                        local_sum += lj_pair_u_from_r2(r2, p)
+                    end
+                end
             end
-            if dr_y > L_half
-                dr_y = dr_y - L
-            elseif dr_y < -L_half
-                dr_y = dr_y + L
-            end
-            if dr_z > L_half
-                dr_z = dr_z - L
-            elseif dr_z < -L_half
-                dr_z = dr_z + L
-            end
-            
-            r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
-            
-            if r2 < rc2 && r2 > 0.0
-                # Use mixed parameters for multicomponent
-                if p.n_types > 1
-                    energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
-                else
-                    # Single-component backward compatibility
-                    energy += lj_pair_u_from_r2(r2, p)
+            sums[tid] += local_sum
+        end
+        energy = sum(sums)
+    else
+        @inbounds for i in 1:N
+            type_i = types[i]
+            for j in (i+1):N
+                type_j = types[j]
+                
+                # Compute distance vector
+                dr_x = pos[1, j] - pos[1, i]
+                dr_y = pos[2, j] - pos[2, i]
+                dr_z = pos[3, j] - pos[3, i]
+                
+                # Apply minimum image convention
+                if dr_x > L_half
+                    dr_x = dr_x - L
+                elseif dr_x < -L_half
+                    dr_x = dr_x + L
+                end
+                if dr_y > L_half
+                    dr_y = dr_y - L
+                elseif dr_y < -L_half
+                    dr_y = dr_y + L
+                end
+                if dr_z > L_half
+                    dr_z = dr_z - L
+                elseif dr_z < -L_half
+                    dr_z = dr_z + L
+                end
+                
+                r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
+                
+                if r2 < rc2 && r2 > 0.0
+                    # Use mixed parameters for multicomponent
+                    if use_mixed
+                        energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
+                    else
+                        # Single-component backward compatibility
+                        energy += lj_pair_u_from_r2(r2, p)
+                    end
                 end
             end
         end
