@@ -299,7 +299,6 @@ function main()
     eq_rev_accepted = 0
     equil_start = time()
     for sweep in 1:args["equil"]
-        sweep_start = time()
         _tacc, _vacc, _vatt, racc, ratt, rfatt, rfacc, rratt, rracc, _fc, _rc, _iu, _cb, _ca, _counters =
             MolSim.MC.sweep_npt_with_reactions!(st, p, reaction;
             Pext=P_used, max_dlnV=0.01, p_reaction=args["p_reaction"],
@@ -311,15 +310,22 @@ function main()
         eq_fwd_accepted += rfacc
         eq_rev_attempts += rratt
         eq_rev_accepted += rracc
-        sweep_elapsed = time() - sweep_start
     end
+    equil_elapsed = time() - equil_start
     println("Equilibration reaction stats:")
     println("  attempts=$(eq_react_attempts), accepted=$(eq_react_accepted)")
     println("  forward: attempts=$(eq_fwd_attempts), accepted=$(eq_fwd_accepted)")
     println("  reverse: attempts=$(eq_rev_attempts), accepted=$(eq_rev_accepted)")
+    println("Equilibration timing:")
+    println("  elapsed_s=$(round(equil_elapsed, digits=3)) sweeps_per_s=$(round(args["equil"] / max(equil_elapsed, 1e-9), digits=3))")
     
     println("Starting production...")
     counts_sum = zeros(Float64, 3)
+    counts_sq_sum = zeros(Float64, 3)
+    energy_sum = 0.0
+    energy_sq_sum = 0.0
+    pressure_sum = 0.0
+    pressure_sq_sum = 0.0
     n_samples = 0
     prod_react_attempts = 0
     prod_react_accepted = 0
@@ -329,7 +335,6 @@ function main()
     prod_rev_accepted = 0
     prod_start = time()
     for sweep in 1:args["prod"]
-        sweep_start = time()
         _tacc, _vacc, _vatt, racc, ratt, rfatt, rfacc, rratt, rracc, _fc, _rc, _iu, _cb, _ca, _counters =
             MolSim.MC.sweep_npt_with_reactions!(st, p, reaction;
             Pext=P_used, max_dlnV=0.01, p_reaction=args["p_reaction"],
@@ -341,23 +346,48 @@ function main()
         prod_fwd_accepted += rfacc
         prod_rev_attempts += rratt
         prod_rev_accepted += rracc
-        sweep_elapsed = time() - sweep_start
         if sweep % args["stride"] == 0
             counts = MolSim.MC.count_species(st, 3)
             counts_sum .+= counts
+            counts_sq_sum .+= counts .* counts
+            energy = MolSim.MC.total_energy(st, p)
+            pressure = MolSim.MC.pressure(st, p, T_used)
+            energy_sum += energy
+            energy_sq_sum += energy * energy
+            pressure_sum += pressure
+            pressure_sq_sum += pressure * pressure
             n_samples += 1
         end
     end
+    prod_elapsed = time() - prod_start
     println("Production reaction stats:")
     println("  attempts=$(prod_react_attempts), accepted=$(prod_react_accepted)")
     println("  forward: attempts=$(prod_fwd_attempts), accepted=$(prod_fwd_accepted)")
     println("  reverse: attempts=$(prod_rev_attempts), accepted=$(prod_rev_accepted)")
+    println("Production timing:")
+    println("  elapsed_s=$(round(prod_elapsed, digits=3)) sweeps_per_s=$(round(args["prod"] / max(prod_elapsed, 1e-9), digits=3))")
     
-    avg_counts = counts_sum ./ max(n_samples, 1)
-    println("Average counts:")
-    println("  N2 = $(avg_counts[1])")
-    println("  O2 = $(avg_counts[2])")
-    println("  NO = $(avg_counts[3])")
+    if n_samples > 0
+        avg_counts = counts_sum ./ n_samples
+        var_counts = counts_sq_sum ./ n_samples .- avg_counts .* avg_counts
+        std_counts = sqrt.(max.(var_counts, 0.0))
+        avg_energy = energy_sum / n_samples
+        var_energy = energy_sq_sum / n_samples - avg_energy * avg_energy
+        std_energy = sqrt(max(var_energy, 0.0))
+        avg_pressure = pressure_sum / n_samples
+        var_pressure = pressure_sq_sum / n_samples - avg_pressure * avg_pressure
+        std_pressure = sqrt(max(var_pressure, 0.0))
+        println("Samples:")
+        println("  n_samples=$(n_samples) stride=$(args["stride"])")
+        println("Average counts (mean ± std):")
+        println("  N2 = $(avg_counts[1]) ± $(std_counts[1])")
+        println("  O2 = $(avg_counts[2]) ± $(std_counts[2])")
+        println("  NO = $(avg_counts[3]) ± $(std_counts[3])")
+        println("Average energy (mean ± std): $(avg_energy) ± $(std_energy)")
+        println("Average pressure (mean ± std): $(avg_pressure) ± $(std_pressure)")
+    else
+        println("Samples: none (n_samples=0). Increase production sweeps or decrease stride.")
+    end
 end
 
 main()
