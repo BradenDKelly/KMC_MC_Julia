@@ -21,9 +21,7 @@ using Random
     β = 1.0 / T
     
     # Create parameters
-    p = MolSim.MC.LJParams(σ=1.0, ϵ=1.0, rc=rc, rc2=rc2, β=β, max_disp=0.1,
-                           use_lrc=false, lrc_u_per_particle=0.0, lrc_p=0.0,
-                           lj_model=:truncated, apply_impulsive_correction=false, u_rc=0.0)
+    p = MolSim.MC.LJParams(1.0, 1.0, rc, rc2, β, 0.1, false, 0.0, 0.0, :truncated, false, 0.0)
     
     # Create state with two particles at specific positions
     rng = Xoshiro(12345)

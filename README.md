@@ -2,6 +2,18 @@
 
 Monte Carlo simulation package for Lennard-Jones systems.
 
+## EXP-6 (Buckingham) Force Field
+
+EXP-6 is available via `MolSim.MC.Exp6Params` and the driver script
+`scripts/run_table3_3_exp6_no_n2_o2.jl`. Reduced units use N2 as reference:
+- `rm* = rm / rm_ref`
+- `ε* = ε / ε_ref`
+- `T* = T / ε_ref`
+- `P* = P * (rm_ref^3 / (kB * ε_ref))` with Å, K, and GPa inputs
+
+Mixing rules for EXP-6 are Lorentz–Berthelot for `rm` and `ε`, with arithmetic mean for `α`.
+LJ codepaths remain unchanged.
+
 ## Testing
 
 By default, `Pkg.test()` runs fast, deterministic tests:

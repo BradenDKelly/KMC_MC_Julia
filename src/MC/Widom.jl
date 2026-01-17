@@ -74,6 +74,65 @@ function widom_deltaU(st::LJState, p::LJParams; test_type::Int=1)::Float64
     return ΔU
 end
 
+function widom_deltaU(st::LJState, p::Exp6Params; test_type::Int=1)::Float64
+    N = st.N
+    L = st.L
+    rc2 = p.rc2
+    ncell = st.cl.ncell
+    pos = st.pos
+    dr = st.scratch_dr
+    
+    # Generate random test position in [0, L)^3
+    test_x = rand(st.rng) * L
+    test_y = rand(st.rng) * L
+    test_z = rand(st.rng) * L
+    
+    # Compute cell index for test position
+    test_cell_idx = get_cell(test_x, test_y, test_z, L, ncell)
+    
+    # Convert to 3D cell indices
+    k = ((test_cell_idx - 1) % ncell) + 1
+    j = (((test_cell_idx - 1) ÷ ncell) % ncell) + 1
+    i_cell = ((test_cell_idx - 1) ÷ (ncell * ncell)) + 1
+    
+    # Compute ΔU by summing over neighbors in 27 cells
+    ΔU = 0.0
+    
+    @inbounds for di in -1:1
+        for dj in -1:1
+            for dk in -1:1
+                cell_i = ((i_cell - 1 + di + ncell) % ncell) + 1
+                cell_j = ((j - 1 + dj + ncell) % ncell) + 1
+                cell_k = ((k - 1 + dk + ncell) % ncell) + 1
+                
+                neighbor_cell = cell_index(cell_i, cell_j, cell_k, ncell)
+                
+                # Iterate through particles in this cell (linked list)
+                pj = st.cl.head[neighbor_cell]
+                while pj > 0
+                    # Compute distance vector (no allocation)
+                    dr[1] = pos[1, pj] - test_x
+                    dr[2] = pos[2, pj] - test_y
+                    dr[3] = pos[3, pj] - test_z
+                    
+                    # Apply minimum image convention
+                    minimum_image!(dr, L)
+                    
+                    r2 = dr[1]*dr[1] + dr[2]*dr[2] + dr[3]*dr[3]
+                    
+                    if r2 < rc2 && r2 > 0.0
+                        type_j = st.types[pj]
+                        ΔU += exp6_pair_u_from_r2(r2, test_type, type_j, p)
+                    end
+                    pj = st.cl.next[pj]
+                end
+            end
+        end
+    end
+    
+    return ΔU
+end
+
 """
     rmin_to_particles(st, x)::Float64
 
@@ -335,6 +394,20 @@ function widom_mu_ex!(acc::WidomAccumulator, st::LJState, p::LJParams; ninsert::
     return mu_ex(acc, β)
 end
 
+function widom_mu_ex!(acc::WidomAccumulator, st::LJState, p::Exp6Params; ninsert::Int=1000, test_type::Int=1)::Float64
+    β = p.β
+    for _ in 1:ninsert
+        ΔU = widom_deltaU(st, p; test_type=test_type)
+        push!(acc, β, ΔU)
+    end
+    μ_ex_val = mu_ex(acc, β)
+    if p.use_lrc
+        counts = _counts_from_types(st.types, p.n_types)
+        μ_ex_val += exp6_lrc_mu(counts, st.L, p, test_type)
+    end
+    return μ_ex_val
+end
+
 """
     widom_mu_ex_cavity!(acc::WidomAccumulator, st::LJState, p::LJParams; ninsert::Int=1000, rmin_cut::Float64=0.85) -> (μ_ex::Float64, pbias::Float64)
 
@@ -435,6 +508,60 @@ function widom_deltaU_at_point(st::LJState, p::LJParams, test_x::Float64, test_y
                             # Single-component backward compatibility
                             ΔU += lj_pair_u_from_r2(r2, p)
                         end
+                    end
+                    pj = st.cl.next[pj]
+                end
+            end
+        end
+    end
+    
+    return ΔU
+end
+
+function widom_deltaU_at_point(st::LJState, p::Exp6Params, test_x::Float64, test_y::Float64, test_z::Float64; test_type::Int=1)::Float64
+    L = st.L
+    rc2 = p.rc2
+    ncell = st.cl.ncell
+    pos = st.pos
+    types = st.types
+    dr = st.scratch_dr
+    
+    # Compute cell index for test position
+    test_cell_idx = get_cell(test_x, test_y, test_z, L, ncell)
+    
+    # Convert to 3D cell indices
+    k = ((test_cell_idx - 1) % ncell) + 1
+    j = (((test_cell_idx - 1) ÷ ncell) % ncell) + 1
+    i_cell = ((test_cell_idx - 1) ÷ (ncell * ncell)) + 1
+    
+    # Compute ΔU by summing over neighbors in 27 cells
+    ΔU = 0.0
+    
+    @inbounds for di in -1:1
+        for dj in -1:1
+            for dk in -1:1
+                cell_i = ((i_cell - 1 + di + ncell) % ncell) + 1
+                cell_j = ((j - 1 + dj + ncell) % ncell) + 1
+                cell_k = ((k - 1 + dk + ncell) % ncell) + 1
+                
+                neighbor_cell = cell_index(cell_i, cell_j, cell_k, ncell)
+                
+                # Iterate through particles in this cell (linked list)
+                pj = st.cl.head[neighbor_cell]
+                while pj > 0
+                    # Compute distance vector (no allocation)
+                    dr[1] = pos[1, pj] - test_x
+                    dr[2] = pos[2, pj] - test_y
+                    dr[3] = pos[3, pj] - test_z
+                    
+                    # Apply minimum image convention
+                    minimum_image!(dr, L)
+                    
+                    r2 = dr[1]*dr[1] + dr[2]*dr[2] + dr[3]*dr[3]
+                    
+                    if r2 < rc2 && r2 > 0.0
+                        type_j = types[pj]
+                        ΔU += exp6_pair_u_from_r2(r2, test_type, type_j, p)
                     end
                     pj = st.cl.next[pj]
                 end

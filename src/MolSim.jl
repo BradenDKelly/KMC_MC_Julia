@@ -12,6 +12,7 @@ module MolSim
         include("MC/LJMC.jl")
         include("MC/BlockAveraging.jl")
         include("MC/Observables.jl")
+        include("MC/Exp6.jl")
     include("MC/Widom.jl")
     include("MC/Molecules.jl")
     include("MC/Fluctuations.jl")

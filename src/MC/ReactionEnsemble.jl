@@ -20,6 +20,7 @@ const _debug_reaction_counter = Ref(0)
 const _react_debug_counter = Ref(0)
 const _equil_accept_counter = Ref(Dict{Symbol, Int}(:forward => 0, :reverse => 0))
 const _equil_debug_accept_counter = Ref(Dict{Symbol, Int}(:forward => 0, :reverse => 0))
+const _exp6_audit_counter = Ref(0)
 
 # Detailed balance audit breakdown (for A⇌D+F DB audit)
 struct AcceptanceBreakdown
@@ -33,6 +34,7 @@ struct AcceptanceBreakdown
     logq_term::Float64  # Ideal-gas partition function term
     vol_term::Float64  # Volume term
     logK_term::Float64  # Equilibrium constant term
+    logGamma_term::Float64  # Standard-state chemistry term (logGamma)
     log_prop_ratio::Float64  # Proposal density ratio
     logα_total::Float64  # Total acceptance ratio (log_acc)
     log_pi_ratio::Float64  # Target measure ratio (log π(y) - log π(x))
@@ -43,6 +45,9 @@ struct AcceptanceBreakdown
     insertion_mode::Symbol  # Insertion mode used for this move
     proposal_mode::Symbol  # Proposal mode used for this move
 end
+
+# DB_AUDIT print guard for logGamma-based reactions
+const _db_audit_gamma_printed = Ref(Dict{Tuple{String, Symbol}, Bool}())
 
 # Reaction instrumentation counters (for A⇌D+F specifically)
 mutable struct ReactionCounters
@@ -95,6 +100,7 @@ struct Reaction
     stoichiometry::Vector{Int}  # stoichiometry[species_id] = coefficient (negative=reactant, positive=product)
     logK::Float64               # log of equilibrium constant (deprecated for Table 3.2, use logq instead)
     logq::Union{Vector{Float64}, Nothing}  # log(q/λ³) per species, or nothing
+    logGamma::Union{Float64, Nothing}  # standard-state chemistry term (logGamma)
 end
 
 """
@@ -102,8 +108,10 @@ end
 
 Convenience constructor for Reaction.
 """
-function Reaction(label::String, stoichiometry::Vector{Int}, logK::Float64; logq::Union{Vector{Float64}, Nothing}=nothing)
-    return Reaction(label, stoichiometry, logK, logq)
+function Reaction(label::String, stoichiometry::Vector{Int}, logK::Float64;
+                  logq::Union{Vector{Float64}, Nothing}=nothing,
+                  logGamma::Union{Float64, Nothing}=nothing)
+    return Reaction(label, stoichiometry, logK, logq, logGamma)
 end
 
 """
@@ -442,7 +450,7 @@ combinatorial factors (no insertion/deletion), no proposal density ratios
 
 Returns true if accepted, false if rejected.
 """
-function alchemical_flip_trial!(st::LJState, p::LJParams, reaction::Reaction, direction::Symbol)::Bool
+function alchemical_flip_trial!(st::LJState, p, reaction::Reaction, direction::Symbol)::Bool
     stoichiometry = reaction.stoichiometry
     n_species = length(stoichiometry)
     
@@ -498,6 +506,7 @@ function alchemical_flip_trial!(st::LJState, p::LJParams, reaction::Reaction, di
     # Compute energy change from local interactions only
     N = st.N
     L = st.L
+    counts_before = count_species(st, n_species)
     U_before = _energy_contrib_single(particle_idx, st.pos, st.types, N, L, p, old_type)
     
     # Perform the type flip
@@ -506,8 +515,13 @@ function alchemical_flip_trial!(st::LJState, p::LJParams, reaction::Reaction, di
     # Compute energy after flip (positions unchanged, only type changed)
     U_after = _energy_contrib_single(particle_idx, st.pos, st.types, N, L, p, new_type)
     ΔU = U_after - U_before
+
+    if p.use_lrc && (p isa Exp6Params)
+        counts_after = count_species(st, n_species)
+        ΔU += exp6_lrc_energy_total(counts_after, L, p) - exp6_lrc_energy_total(counts_before, L, p)
+    end
     
-    # MINIMAL ACCEPTANCE: ln_acc = -β*ΔU + (logq_new - logq_old) + logK0
+    # MINIMAL ACCEPTANCE: ln_acc = -β*ΔU + (logq_new - logq_old) + logK0 (+logGamma if provided)
     log_acc = -p.β * ΔU
     
     # Add logq difference
@@ -519,6 +533,11 @@ function alchemical_flip_trial!(st::LJState, p::LJParams, reaction::Reaction, di
     
     # Add logK0 term (reaction.logK)
     log_acc += reaction.logK
+    
+    # Add logGamma term if provided (directional)
+    if reaction.logGamma !== nothing
+        log_acc += (direction == :forward ? reaction.logGamma : -reaction.logGamma)
+    end
     
     # Metropolis acceptance
     accepted = false
@@ -571,7 +590,7 @@ Returns: (accepted::Bool, feasible::Bool)
 - accepted: true if the reaction was committed (state updated AND invariants passed), false otherwise
 If feasible=false, the state is unchanged. If accepted=false, state is restored.
 """
-function reaction_trial!(st::LJState, p::LJParams, reaction::Reaction, direction::Symbol;
+function reaction_trial!(st::LJState, p, reaction::Reaction, direction::Symbol;
                          proposal_mode::Symbol=:uniform, com_kernel_Δ::Float64=0.05,
                          debug_reactions::Bool=false,
                          use_alchemical::Bool=true,
@@ -607,7 +626,7 @@ Returns: (metropolis_accepted::Bool, committed::Bool, feasible::Bool, invariant_
 - invariant_failed: true if state update was attempted but invariants failed (state was rolled back)
 If feasible=false, the state is unchanged. If invariant_failed=true, state is restored.
 """
-function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, direction::Symbol;
+function _reaction_trial4!(st::LJState, p, reaction::Reaction, direction::Symbol;
                            proposal_mode::Symbol=:uniform, com_kernel_Δ::Float64=0.05,
                            debug_reactions::Bool=false,
                            use_alchemical::Bool=true,
@@ -655,11 +674,22 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
     
     # Handle ΔN=0 reactions
     if Δn_forward == 0
-        if use_alchemical
+        # Count reactant/product species for this direction
+        n_reactant_species = 0
+        n_product_species = 0
+        for ν in stoichiometry
+            if ν < 0
+                n_reactant_species += 1
+            elseif ν > 0
+                n_product_species += 1
+            end
+        end
+        # Only allow alchemical flip for 1↔1 reactions; otherwise fall through to general path
+        if use_alchemical && n_reactant_species == 1 && n_product_species == 1
             # Use alchemical flip (current optimized path)
             accepted = alchemical_flip_trial!(st, p, reaction, direction)
             return (accepted, accepted, true, false)  # (metropolis_accepted, committed, feasible, invariant_failed)
-        else
+        elseif !use_alchemical && n_reactant_species == 1 && n_product_species == 1
             # Use uniform delete+insert (Smith-Tríska path)
             # Compute νeff for direction
             νeff = direction == :forward ? stoichiometry : [-ν for ν in stoichiometry]
@@ -755,6 +785,11 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
             
             # logK term
             log_acc += reaction.logK
+            
+            # logGamma term (directional)
+            if reaction.logGamma !== nothing
+                log_acc += (direction == :forward ? reaction.logGamma : -reaction.logGamma)
+            end
             
             # Metropolis acceptance
             metropolis_accepted = false
@@ -936,12 +971,27 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         # A placed at rD (deterministic)
         push!(positions_to_insert, SVector{3,Float64}(rD[1], rD[2], rD[3]))
     else
-        # General case: Smith–Tríska uniform insertion for ALL products.
-        # No anchoring or fixed separations.
-        for (species_id, ν) in enumerate(νeff)
-            if ν > 0
-                for _ in 1:ν
-                    push!(positions_to_insert, SVector{3,Float64}(rand(st.rng) * L, rand(st.rng) * L, rand(st.rng) * L))
+        if insertion_mode == :anchored
+            # Anchored insertion: place up to min(n_p, n_r) products at deleted positions,
+            # remaining products uniformly in the box.
+            n_anchor = min(n_p, n_r)
+            # Anchor using the first deleted positions (order is deterministic)
+            for i in 1:n_anchor
+                r0 = deleted_positions[i]
+                push!(positions_to_insert, SVector{3,Float64}(r0[1], r0[2], r0[3]))
+            end
+            # Remaining products inserted uniformly
+            n_uniform = n_p - n_anchor
+            for _ in 1:n_uniform
+                push!(positions_to_insert, SVector{3,Float64}(rand(st.rng) * L, rand(st.rng) * L, rand(st.rng) * L))
+            end
+        else
+            # Standard REMC / uniform-only: uniform insertion for ALL products.
+            for (species_id, ν) in enumerate(νeff)
+                if ν > 0
+                    for _ in 1:ν
+                        push!(positions_to_insert, SVector{3,Float64}(rand(st.rng) * L, rand(st.rng) * L, rand(st.rng) * L))
+                    end
                 end
             end
         end
@@ -1015,10 +1065,21 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
     # Compute energy change from local contributions
     new_contrib = _energy_contrib_indices(inserted_indices, st.pos, st.types, st.N, L, p)
     ΔU = new_contrib - old_contrib
-    if p.use_lrc
-        ΔU += Float64(st.N - N_before) * p.lrc_u_per_particle
-    end
     
+    # Count species after reaction
+    counts_after = count_species(st, n_species)
+
+    # Exp-6 tail corrections (composition-dependent)
+    if p.use_lrc
+        if p isa Exp6Params
+            lrc_before = exp6_lrc_energy_total(counts_before, L, p)
+            lrc_after = exp6_lrc_energy_total(counts_after, L, p)
+            ΔU += (lrc_after - lrc_before)
+        else
+            ΔU += Float64(st.N - N_before) * p.lrc_u_per_particle
+        end
+    end
+
     # Check for NaN/Inf in energy
     energy_valid = isfinite(ΔU)
     if counters !== nothing && reaction.label == "A⇌D+F"
@@ -1037,11 +1098,8 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         end
     end
     
-    # Count species after reaction
-    counts_after = count_species(st, n_species)
-    
     # Smith–Tríska acceptance formula (strict)
-    # logα = -β * ΔU + Σ ν_i * log(q_i) + log(∏ N_i! / (N_i + ν_i)!) + (Σ ν_i) * log(V)
+    # logα = -β * ΔU + Σ ν_i * log(q_i) + log(∏ N_i! / (N_i + ν_i)!) + (Σ ν_i) * log(V) + logGamma
     ΔN = sum(νeff)
     ΔU_term = -p.β * ΔU
     log_acc = ΔU_term
@@ -1081,6 +1139,11 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         end
     end
     log_acc += fact_term
+    
+    # Standard-state chemistry term (logGamma, directional)
+    logGamma_term = reaction.logGamma === nothing ? 0.0 :
+        (direction == :forward ? reaction.logGamma : -reaction.logGamma)
+    log_acc += logGamma_term
     
     # No proposal density corrections, no logK term for Smith–Tríska REMC
     logK_term = 0.0
@@ -1277,6 +1340,16 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         end
     end
     
+    # EXP-6 audit (first 20 attempted reactions)
+    if get(ENV, "EXP6_AUDIT", "0") == "1" && (p isa Exp6Params) && _exp6_audit_counter[] < 20
+        _exp6_audit_counter[] += 1
+        println("EXP6_AUDIT[$(_exp6_audit_counter[])]: direction=$direction counts_before=$counts_before ΔU=$(round(ΔU, digits=6)) " *
+                "(-βΔU)=$(round(ΔU_term, digits=6)) logq=$(round(logq_term, digits=6)) " *
+                "logcombo=$(round(fact_term, digits=6)) vol=$(round(vol_term, digits=6)) " *
+                "logGamma=$(round(logGamma_term, digits=6)) logK=$(round(logK_term, digits=6)) logα=$(round(log_acc, digits=6)) " *
+                "log(u)=$(round(log_u, digits=6)) accepted=$metropolis_accepted")
+    end
+    
     if metropolis_accepted
         # Count as accepted
         if counters !== nothing && reaction.label == "A⇌D+F"
@@ -1430,6 +1503,7 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
             logq_term,
             vol_term,
             logK_term,
+            logGamma_term,
             log_prop_ratio,
             log_acc,  # logα_total
             log_pi_ratio,
@@ -1443,6 +1517,23 @@ function _reaction_trial4!(st::LJState, p::LJParams, reaction::Reaction, directi
         
         # Call callback
         db_audit_callback(breakdown)
+    end
+    
+    # DB_AUDIT for logGamma reactions: print first accepted forward/reverse
+    if db_audit_enabled && reaction.logGamma !== nothing && metropolis_accepted && energy_valid && log_acc_valid
+        key = (reaction.label, direction)
+        printed = get(_db_audit_gamma_printed[], key, false)
+        if !printed
+            _db_audit_gamma_printed[][key] = true
+            log_alpha_sum = ΔU_term + vol_term + fact_term + logGamma_term
+            println("DB_AUDIT_GAMMA: reaction=$(reaction.label) direction=$direction")
+            println("  ΔU=$(round(ΔU, digits=6)) β=$(round(p.β, digits=6)) -βΔU=$(round(ΔU_term, digits=6))")
+            println("  logGamma=$(round(logGamma_term, digits=6)) logcombo=$(round(fact_term, digits=6)) vol_term=$(round(vol_term, digits=6))")
+            println("  logα=$(round(log_acc, digits=6)) sum_terms=$(round(log_alpha_sum, digits=6))")
+            if abs(log_alpha_sum - log_acc) >= 1e-10
+                error("DB_AUDIT_FAIL_GAMMA: |logα - sum_terms| >= 1e-10")
+            end
+        end
     end
     
     # State update is valid and committed
@@ -1460,14 +1551,19 @@ If reaction is not nothing and p_reaction > 0, attempts a reaction move with pro
 Parameters:
 - proposal_mode: :uniform or :com_insert (default: :uniform)
 - com_kernel_Δ: Kernel width for COM insertion (default: 0.05, relative to box length)
+- use_alchemical: enable alchemical flips for 1↔1 reactions (default: true)
+- insertion_mode: :anchored, :standard_remc, or :uniform_only (default: :anchored)
+- debug_logacc: enable reaction log acceptance debug (default: false)
 
 Returns: (translation_acceptance_rate, reaction_accepted, reaction_attempted, 
           reaction_forward_attempted, reaction_forward_accepted,
           reaction_reverse_attempted, reaction_reverse_accepted)
 """
-function sweep_with_reactions!(st::LJState, p::LJParams, reaction::Union{Reaction, Nothing};
+function sweep_with_reactions!(st::LJState, p, reaction::Union{Reaction, Nothing};
                                p_reaction::Float64=0.0, rebuild_every::Int=-1,
-                               proposal_mode::Symbol=:uniform, com_kernel_Δ::Float64=0.05)
+                               proposal_mode::Symbol=:uniform, com_kernel_Δ::Float64=0.05,
+                               use_alchemical::Bool=true, insertion_mode::Symbol=:anchored,
+                               debug_logacc::Bool=false)
     # Perform regular translation sweep
     translation_acceptance = sweep!(st, p; rebuild_every=rebuild_every)
     
@@ -1534,7 +1630,7 @@ Returns: (translation_acceptance_rate, volume_accepted, volume_attempted,
           forward_committed, reverse_committed, immediate_undo,
           counts_before_reaction, counts_after_reaction)
 """
-function sweep_npt_with_reactions!(st::LJState, p::LJParams, reaction::Union{Reaction, Nothing};
+function sweep_npt_with_reactions!(st::LJState, p, reaction::Union{Reaction, Nothing};
                                     Pext::Float64=1.0, max_dlnV::Float64=0.01,
                                     p_reaction::Float64=0.0, do_volume_move::Bool=false,
                                     rebuild_every::Int=-1,
