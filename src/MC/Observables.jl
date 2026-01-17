@@ -99,7 +99,7 @@ function total_energy(st, p)::Float64
     use_mixed = p.n_types > 1
     
     if nthreads() > 1 && N >= 200
-        sums = zeros(Float64, nthreads())
+        sums = zeros(Float64, Base.Threads.maxthreadid())
         @threads for i in 1:N
             tid = threadid()
             type_i = types[i]
