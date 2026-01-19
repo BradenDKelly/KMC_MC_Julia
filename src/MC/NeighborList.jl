@@ -85,3 +85,53 @@ function rebuild_cells!(st)
     
     return nothing
 end
+
+"""
+    update_cell!(st, i)
+
+Update the cell list for a single moved particle i.
+Removes i from its old cell list and inserts into the new cell.
+"""
+function update_cell!(st, i::Int)
+    N = st.N
+    @assert 1 <= i <= N "particle index out of bounds"
+
+    L = st.L
+    ncell = st.cl.ncell
+    pos = st.pos
+
+    # Compute new cell index for particle i
+    x, y, z = pos[1, i], pos[2, i], pos[3, i]
+    x_wrapped = x - L * floor(x / L)
+    y_wrapped = y - L * floor(y / L)
+    z_wrapped = z - L * floor(z / L)
+    new_cell = get_cell(x_wrapped, y_wrapped, z_wrapped, L, ncell)
+
+    old_cell = st.cl.cell_of[i]
+    if old_cell == new_cell
+        return nothing
+    end
+
+    # Remove i from old cell linked list
+    head = st.cl.head
+    next = st.cl.next
+
+    if head[old_cell] == i
+        head[old_cell] = next[i]
+    else
+        prev = head[old_cell]
+        while prev != 0 && next[prev] != i
+            prev = next[prev]
+        end
+        if prev != 0
+            next[prev] = next[i]
+        end
+    end
+
+    # Insert i at head of new cell
+    next[i] = head[new_cell]
+    head[new_cell] = i
+    st.cl.cell_of[i] = new_cell
+
+    return nothing
+end

@@ -2,6 +2,10 @@
 Observable computation utilities (energy, virial, pressure).
 """
 
+# Overlap cap (reduced units): if r < r_cap, set U/ε = 100 and force = 0
+const OVERLAP_U_REDUCED = 100.0
+const OVERLAP_R_REDUCED = 0.7521055053376686
+
 """
     lj_pair_u_from_r2(r2, p)::Float64
 
@@ -15,6 +19,11 @@ Returns 0.0 if r2 >= rc2.
 @inline function lj_pair_u_from_r2(r2::Float64, p::LJParams)::Float64
     if r2 >= p.rc2 || r2 <= 0.0
         return 0.0
+    end
+    # Overlap cap: if r < r_cap, return capped energy
+    rcap2 = (OVERLAP_R_REDUCED * p.σ)^2
+    if r2 < rcap2
+        return OVERLAP_U_REDUCED * p.ϵ
     end
     # Guard against very small distances (must not allocate)
     if r2 < 1e-14
@@ -61,6 +70,12 @@ Returns 0.0 if r2 >= rc2.
         @inbounds ϵ_ab = p.ϵ_mix[type_i, type_j]
     end
     
+    # Overlap cap: if r < r_cap, return capped energy
+    rcap2 = (OVERLAP_R_REDUCED * σ_ab)^2
+    if r2 < rcap2
+        return OVERLAP_U_REDUCED * ϵ_ab
+    end
+
     σ2_ab = σ_ab * σ_ab
     invr2 = σ2_ab / r2
     invr6 = invr2 * invr2 * invr2
@@ -145,6 +160,85 @@ function total_energy(st, p)::Float64
 end
 
 """
+    total_energy_scaled(st, p, scale)::Float64
+
+Compute total energy for a uniform volume scaling by `scale` (L' = L * scale),
+without modifying the state. Used for virtual volume-change estimators.
+"""
+function total_energy_scaled(st, p, scale::Float64)::Float64
+    energy = 0.0
+    N = st.N
+    L = st.L
+    rc2 = p.rc2
+    pos = st.pos
+    types = st.types
+    s2 = scale * scale
+
+    @inbounds for i in 1:N
+        type_i = types[i]
+        for j in (i+1):N
+            type_j = types[j]
+
+            dr_x = pos[1, j] - pos[1, i]
+            dr_y = pos[2, j] - pos[2, i]
+            dr_z = pos[3, j] - pos[3, i]
+
+            # Minimum image with original box, then scale distances
+            L_half = L / 2.0
+            if dr_x > L_half
+                dr_x = dr_x - L
+            elseif dr_x < -L_half
+                dr_x = dr_x + L
+            end
+            if dr_y > L_half
+                dr_y = dr_y - L
+            elseif dr_y < -L_half
+                dr_y = dr_y + L
+            end
+            if dr_z > L_half
+                dr_z = dr_z - L
+            elseif dr_z < -L_half
+                dr_z = dr_z + L
+            end
+
+            r2 = (dr_x*dr_x + dr_y*dr_y + dr_z*dr_z) * s2
+
+            if r2 < rc2 && r2 > 0.0
+                if p.n_types > 1
+                    energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
+                else
+                    energy += lj_pair_u_from_r2(r2, p)
+                end
+            end
+        end
+    end
+
+    if p.use_lrc
+        V = L * L * L
+        ρ_scaled = N / (V * scale * scale * scale)
+        energy += N * compute_lrc_energy_per_particle(ρ_scaled, p.rc)
+    end
+
+    return energy
+end
+
+"""
+    virtual_volume_exp_factors(st, p, dlnV)::Tuple{Float64, Float64}
+
+Compute exp(-βΔU) factors for symmetric virtual volume changes (+/- dlnV).
+"""
+function virtual_volume_exp_factors(st, p, dlnV::Float64)::Tuple{Float64, Float64}
+    U0 = total_energy(st, p)
+    scale_plus = exp(dlnV / 3.0)
+    scale_minus = exp(-dlnV / 3.0)
+    U_plus = total_energy_scaled(st, p, scale_plus)
+    U_minus = total_energy_scaled(st, p, scale_minus)
+    exp_plus = exp(-p.β * (U_plus - U0))
+    exp_minus = exp(-p.β * (U_minus - U0))
+    return exp_plus, exp_minus
+end
+
+"""
     lj_force_magnitude_times_r(r2::Float64, p::LJParams)::Float64
 
 Compute r * f(r) for Lennard-Jones force, where f(r) = -dU/dr.
@@ -160,6 +254,11 @@ Note: This function does not depend on lj_model since force is independent of co
 """
 @inline function lj_force_magnitude_times_r(r2::Float64, p::LJParams)::Float64
     if r2 >= p.rc2 || r2 <= 0.0
+        return 0.0
+    end
+    # Overlap cap: constant potential => zero force
+    rcap2 = (OVERLAP_R_REDUCED * p.σ)^2
+    if r2 < rcap2
         return 0.0
     end
     # Use invr2 for numerical stability
@@ -202,6 +301,12 @@ Note: Force is independent of lj_model (shift is constant).
         @inbounds ϵ_ab = p.ϵ_mix[type_i, type_j]
     end
     
+    # Overlap cap: constant potential => zero force
+    rcap2 = (OVERLAP_R_REDUCED * σ_ab)^2
+    if r2 < rcap2
+        return 0.0
+    end
+
     # Use invr2 for numerical stability
     invr2 = 1.0 / r2
     σ2_ab = σ_ab * σ_ab

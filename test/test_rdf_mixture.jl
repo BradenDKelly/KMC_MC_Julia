@@ -2,7 +2,6 @@ using Test
 using MolSim
 using Random
 using StaticArrays
-using Statistics
 
 @testset "Mixture RDF: deterministic lattice geometry" begin
     # Create a small periodic configuration with alternating A/B pattern
@@ -100,7 +99,7 @@ end
         for α in 1:n_types
             for β in 1:n_types
                 g_away = g_ab[α, β, (skip_bins+1):end]
-                mean_g = Statistics.mean(g_away)
+                mean_g = sum(g_away) / length(g_away)
                 # At low density, g(r) should be close to 1
                 @test mean_g ≈ 1.0 rtol=0.5  # Loose tolerance for random config
             end

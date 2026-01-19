@@ -15,16 +15,14 @@ module MolSim
         include("MC/Widom.jl")
         include("MC/Molecules.jl")
         include("MC/Fluctuations.jl")
+    include("MC/eKMC.jl")
+        include("MC/validation/CompareNVT.jl")
     end
 
 # EOS submodule
 module EOS
-    include("EOS/LJVirial.jl")
-    include("EOS/LJKolafaNezbeda1994.jl")
-    include("EOS/LJJohnson1993.jl")
-    include("EOS/LJThol2016.jl")
-    include("EOS/LJKolafaSklogwiki1994.jl")
-    include("EOS/LJNezbedaAuthor.jl")  # Authoritative Nezbeda implementation (uses NKEOS module)
+    include("EOS/NKEOS.jl")            # Python reference port (NKEOS)
+    include("EOS/NKEOSAuthor.jl")      # Author wrapper (unit conversions)
 end
 
 # Analysis submodule
