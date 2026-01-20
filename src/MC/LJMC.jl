@@ -200,14 +200,6 @@ Requires N divisible by 4 and N/4 to be a perfect cube.
 If use_lrc=true, precomputes long-range tail corrections for energy and pressure.
 If types is provided, assigns particle types (must be length N, values 1..n_types).
 """
-@inline function _is_perfect_cube(n::Int)::Bool
-    if n <= 0
-        return false
-    end
-    r = round(Int, cbrt(n))
-    return r * r * r == n
-end
-
 function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
                   max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false,
                   lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false,
@@ -225,7 +217,7 @@ function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5
     
     n_uc = N ÷ 4  # number of unit cells
     nx = round(Int, cbrt(n_uc))
-    if !_is_perfect_cube(n_uc)
+    if nx * nx * nx != n_uc
         throw(ArgumentError("N/4 must be a perfect cube for FCC lattice, got N=$N, N/4=$n_uc"))
     end
     
@@ -330,206 +322,6 @@ function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5
 end
 
 """
-    energy_bruteforce(st, p)::Float64
-
-Compute total energy without using cell lists (debug/reference).
-"""
-function energy_bruteforce(st::LJState, p::LJParams)::Float64
-    energy = 0.0
-    N = st.N
-    L = st.L
-    rc2 = p.rc2
-    pos = st.pos
-    types = st.types
-    @inbounds for i in 1:N
-        type_i = types[i]
-        for j in (i+1):N
-            type_j = types[j]
-            dr_x = pos[1, j] - pos[1, i]
-            dr_y = pos[2, j] - pos[2, i]
-            dr_z = pos[3, j] - pos[3, i]
-            # minimum image
-            L_half = L / 2.0
-            if dr_x > L_half
-                dr_x -= L
-            elseif dr_x < -L_half
-                dr_x += L
-            end
-            if dr_y > L_half
-                dr_y -= L
-            elseif dr_y < -L_half
-                dr_y += L
-            end
-            if dr_z > L_half
-                dr_z -= L
-            elseif dr_z < -L_half
-                dr_z += L
-            end
-            r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
-            if r2 < rc2 && r2 > 0.0
-                if p.n_types > 1
-                    energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
-                else
-                    energy += lj_pair_u_from_r2(r2, p)
-                end
-            end
-        end
-    end
-    if p.use_lrc
-        energy += N * p.lrc_u_per_particle
-    end
-    return energy
-end
-
-"""
-    pressure_bruteforce(st, p, T)::Float64
-
-Compute pressure without using cell lists (debug/reference).
-"""
-function pressure_bruteforce(st::LJState, p::LJParams, T::Float64)::Float64
-    N = st.N
-    L = st.L
-    V = L * L * L
-    ρ = N / V
-    W = 0.0
-    rc2 = p.rc2
-    pos = st.pos
-    types = st.types
-    @inbounds for i in 1:N
-        type_i = types[i]
-        for j in (i+1):N
-            type_j = types[j]
-            dr_x = pos[1, j] - pos[1, i]
-            dr_y = pos[2, j] - pos[2, i]
-            dr_z = pos[3, j] - pos[3, i]
-            # minimum image
-            L_half = L / 2.0
-            if dr_x > L_half
-                dr_x -= L
-            elseif dr_x < -L_half
-                dr_x += L
-            end
-            if dr_y > L_half
-                dr_y -= L
-            elseif dr_y < -L_half
-                dr_y += L
-            end
-            if dr_z > L_half
-                dr_z -= L
-            elseif dr_z < -L_half
-                dr_z += L
-            end
-            r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
-            if r2 < rc2 && r2 > 0.0
-                if p.n_types > 1
-                    W += lj_force_magnitude_times_r_mixed(r2, type_i, type_j, p)
-                else
-                    W += lj_force_magnitude_times_r(r2, p)
-                end
-            end
-        end
-    end
-    P = ρ * T + W / (3.0 * V)
-    if p.use_lrc
-        P += p.lrc_p
-    end
-    if p.apply_impulsive_correction
-        g_rc = compute_g_rc(st, p)
-        rc = p.rc
-        u_rc_unshifted = p.u_rc
-        ΔP_imp = -(2.0 * π / 3.0) * ρ * ρ * rc * rc * rc * u_rc_unshifted * g_rc
-        P += ΔP_imp
-    end
-    return P
-end
-
-"""
-    init_sc(; N::Int=512, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
-             max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false,
-             lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false,
-             types::Union{Vector{Int}, Nothing}=nothing)
-
-Initialize a simple cubic lattice at density ρ and return (params::LJParams, st::LJState).
-This avoids the FCC perfect-cube constraint and fills positions on a cubic grid.
-"""
-function init_sc(; N::Int=512, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
-                 max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false,
-                 lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false,
-                 types::Union{Vector{Int}, Nothing}=nothing)
-    if lj_model != :truncated && lj_model != :shifted
-        throw(ArgumentError("lj_model must be :truncated or :shifted, got :$lj_model"))
-    end
-
-    V = N / ρ
-    L = cbrt(V)
-
-    n3 = ceil(Int, cbrt(N))
-    a = L / n3
-    pos = zeros(Float64, 3, N)
-
-    idx = 1
-    @inbounds for k in 0:(n3-1)
-        for j in 0:(n3-1)
-            for i in 0:(n3-1)
-                if idx > N
-                    break
-                end
-                pos[1, idx] = i * a
-                pos[2, idx] = j * a
-                pos[3, idx] = k * a
-                idx += 1
-            end
-            if idx > N
-                break
-            end
-        end
-        if idx > N
-            break
-        end
-    end
-
-    scratch = MVector{3,Float64}(0.0, 0.0, 0.0)
-    @inbounds for i in 1:N
-        scratch[1] = pos[1, i]
-        scratch[2] = pos[2, i]
-        scratch[3] = pos[3, i]
-        wrap!(scratch, L)
-        pos[1, i] = scratch[1]
-        pos[2, i] = scratch[2]
-        pos[3, i] = scratch[3]
-    end
-
-    lrc_u_per_particle = 0.0
-    lrc_p = 0.0
-    if use_lrc
-        lrc_u_per_particle = compute_lrc_energy_per_particle(ρ, rc)
-        lrc_p = compute_lrc_pressure(ρ, rc)
-    end
-
-    inv_rc2 = 1.0 / (rc * rc)
-    inv_rc6 = inv_rc2 * inv_rc2 * inv_rc2
-    inv_rc12 = inv_rc6 * inv_rc6
-    u_rc = 4.0 * (inv_rc12 - inv_rc6)
-
-    if types === nothing
-        types = fill(1, N)
-    else
-        @assert length(types) == N "types must have length N"
-    end
-
-    params = LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, max_disp, use_lrc, lrc_u_per_particle, lrc_p,
-                      lj_model, apply_impulsive_correction, u_rc)
-
-    cl = CellList(N, L, rc)
-    rng = Xoshiro(seed)
-    scratch_dr = MVector{3,Float64}(0.0, 0.0, 0.0)
-    st = LJState(N, L, pos, copy(types), rng, cl, scratch_dr, 0, 0)
-    rebuild_cells!(st)
-
-    return (params, st)
-end
-
-"""
     local_energy(i::Int, st::LJState, p::LJParams)::Float64
 
 Compute the local energy for particle i (sum over neighbors within rc).
@@ -546,6 +338,7 @@ function local_energy(i::Int, st::LJState, p::LJParams)::Float64
     pos = st.pos
     types = st.types
     dr = st.scratch_dr
+    use_mixed = p.n_types > 1
     
     # Get particle i position and type
     pix = pos[1, i]
@@ -592,7 +385,7 @@ function local_energy(i::Int, st::LJState, p::LJParams)::Float64
                         if r2 < rc2 && r2 > 0.0
                             type_j = types[pj]
                             # Use mixed parameters for multicomponent
-                            if p.n_types > 1
+                            if use_mixed
                                 energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
                             else
                                 # Single-component backward compatibility
@@ -767,10 +560,6 @@ function volume_trial!(st::LJState, p::LJParams; max_dlnV::Float64=0.01, Pext::F
     # Update box length
     st.L = L_new
     
-    # Update cell list for new box size (recreate with new L)
-    st.cl = CellList(N, L_new, st.cl.rc)
-    rebuild_cells!(st)
-    
     # Compute new total energy
     U_new = total_energy(st, p)
     
@@ -787,12 +576,13 @@ function volume_trial!(st::LJState, p::LJParams; max_dlnV::Float64=0.01, Pext::F
     accepted = false
     if log_acc >= 0.0 || rand(st.rng) < exp(log_acc)
         accepted = true
+        # Update cell list for new box size (recreate with new L)
+        st.cl = CellList(N, L_new, st.cl.rc)
+        rebuild_cells!(st)
     else
         # Reject: restore old positions and L
         copyto!(pos, pos_old)
         st.L = L_old
-        st.cl = CellList(N, L_old, st.cl.rc)
-        rebuild_cells!(st)
     end
     
     return accepted

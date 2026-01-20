@@ -2,9 +2,11 @@
 Observable computation utilities (energy, virial, pressure).
 """
 
-# Overlap cap (reduced units): if r < r_cap, set U/ε = 100 and force = 0
-const OVERLAP_U_REDUCED = 100.0
-const OVERLAP_R_REDUCED = 0.7521055053376686
+# Overlap cap (reduced units): if r < r_cap, set U/ε = 1000 and force = 0
+const OVERLAP_U_REDUCED = 100
+const OVERLAP_R_REDUCED = 0.75                     #0.6278893464830442  # U=1000
+
+using Base.Threads
 
 """
     lj_pair_u_from_r2(r2, p)::Float64
@@ -105,47 +107,96 @@ function total_energy(st, p)::Float64
     energy = 0.0
     N = st.N
     L = st.L
+    L_half = 0.5 * L
     rc2 = p.rc2
     pos = st.pos
     types = st.types
+    use_mixed = p.n_types > 1
     
-    @inbounds for i in 1:N
-        type_i = types[i]
-        for j in (i+1):N
-            type_j = types[j]
-            
-            # Compute distance vector
-            dr_x = pos[1, j] - pos[1, i]
-            dr_y = pos[2, j] - pos[2, i]
-            dr_z = pos[3, j] - pos[3, i]
-            
-            # Apply minimum image convention
-            L_half = L / 2.0
-            if dr_x > L_half
-                dr_x = dr_x - L
-            elseif dr_x < -L_half
-                dr_x = dr_x + L
+    if nthreads() > 1 && N >= 200
+        sums = zeros(Float64, Base.Threads.maxthreadid())
+        @threads for i in 1:N
+            tid = threadid()
+            type_i = types[i]
+            local_sum = 0.0
+            for j in (i+1):N
+                type_j = types[j]
+                
+                # Compute distance vector
+                dr_x = pos[1, j] - pos[1, i]
+                dr_y = pos[2, j] - pos[2, i]
+                dr_z = pos[3, j] - pos[3, i]
+                
+                # Apply minimum image convention
+                if dr_x > L_half
+                    dr_x = dr_x - L
+                elseif dr_x < -L_half
+                    dr_x = dr_x + L
+                end
+                if dr_y > L_half
+                    dr_y = dr_y - L
+                elseif dr_y < -L_half
+                    dr_y = dr_y + L
+                end
+                if dr_z > L_half
+                    dr_z = dr_z - L
+                elseif dr_z < -L_half
+                    dr_z = dr_z + L
+                end
+                
+                r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
+                
+                if r2 < rc2 && r2 > 0.0
+                    # Use mixed parameters for multicomponent
+                    if use_mixed
+                        local_sum += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
+                    else
+                        # Single-component backward compatibility
+                        local_sum += lj_pair_u_from_r2(r2, p)
+                    end
+                end
             end
-            if dr_y > L_half
-                dr_y = dr_y - L
-            elseif dr_y < -L_half
-                dr_y = dr_y + L
-            end
-            if dr_z > L_half
-                dr_z = dr_z - L
-            elseif dr_z < -L_half
-                dr_z = dr_z + L
-            end
-            
-            r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
-            
-            if r2 < rc2 && r2 > 0.0
-                # Use mixed parameters for multicomponent
-                if p.n_types > 1
-                    energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
-                else
-                    # Single-component backward compatibility
-                    energy += lj_pair_u_from_r2(r2, p)
+            sums[tid] += local_sum
+        end
+        energy = sum(sums)
+    else
+        @inbounds for i in 1:N
+            type_i = types[i]
+            for j in (i+1):N
+                type_j = types[j]
+                
+                # Compute distance vector
+                dr_x = pos[1, j] - pos[1, i]
+                dr_y = pos[2, j] - pos[2, i]
+                dr_z = pos[3, j] - pos[3, i]
+                
+                # Apply minimum image convention
+                if dr_x > L_half
+                    dr_x = dr_x - L
+                elseif dr_x < -L_half
+                    dr_x = dr_x + L
+                end
+                if dr_y > L_half
+                    dr_y = dr_y - L
+                elseif dr_y < -L_half
+                    dr_y = dr_y + L
+                end
+                if dr_z > L_half
+                    dr_z = dr_z - L
+                elseif dr_z < -L_half
+                    dr_z = dr_z + L
+                end
+                
+                r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
+                
+                if r2 < rc2 && r2 > 0.0
+                    # Use mixed parameters for multicomponent
+                    if use_mixed
+                        energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
+                    else
+                        # Single-component backward compatibility
+                        energy += lj_pair_u_from_r2(r2, p)
+                    end
                 end
             end
         end
@@ -160,19 +211,20 @@ function total_energy(st, p)::Float64
 end
 
 """
-    total_energy_scaled(st, p, scale)::Float64
+    total_energy_scaled(st, p, scale_factor)::Float64
 
-Compute total energy for a uniform volume scaling by `scale` (L' = L * scale),
-without modifying the state. Used for virtual volume-change estimators.
+Compute total energy after uniformly scaling all particle positions and box length
+by scale_factor (used for virtual volume change pressure).
 """
-function total_energy_scaled(st, p, scale::Float64)::Float64
+function total_energy_scaled(st, p, scale_factor::Float64)::Float64
     energy = 0.0
     N = st.N
     L = st.L
+    L_half = 0.5 * L
     rc2 = p.rc2
     pos = st.pos
     types = st.types
-    s2 = scale * scale
+    use_mixed = p.n_types > 1
 
     @inbounds for i in 1:N
         type_i = types[i]
@@ -183,28 +235,30 @@ function total_energy_scaled(st, p, scale::Float64)::Float64
             dr_y = pos[2, j] - pos[2, i]
             dr_z = pos[3, j] - pos[3, i]
 
-            # Minimum image with original box, then scale distances
-            L_half = L / 2.0
+            # Apply minimum image in the original box, then scale
             if dr_x > L_half
-                dr_x = dr_x - L
+                dr_x -= L
             elseif dr_x < -L_half
-                dr_x = dr_x + L
+                dr_x += L
             end
             if dr_y > L_half
-                dr_y = dr_y - L
+                dr_y -= L
             elseif dr_y < -L_half
-                dr_y = dr_y + L
+                dr_y += L
             end
             if dr_z > L_half
-                dr_z = dr_z - L
+                dr_z -= L
             elseif dr_z < -L_half
-                dr_z = dr_z + L
+                dr_z += L
             end
 
-            r2 = (dr_x*dr_x + dr_y*dr_y + dr_z*dr_z) * s2
+            dr_x *= scale_factor
+            dr_y *= scale_factor
+            dr_z *= scale_factor
+            r2 = dr_x*dr_x + dr_y*dr_y + dr_z*dr_z
 
             if r2 < rc2 && r2 > 0.0
-                if p.n_types > 1
+                if use_mixed
                     energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
                 else
                     energy += lj_pair_u_from_r2(r2, p)
@@ -215,7 +269,8 @@ function total_energy_scaled(st, p, scale::Float64)::Float64
 
     if p.use_lrc
         V = L * L * L
-        ρ_scaled = N / (V * scale * scale * scale)
+        ρ = N / V
+        ρ_scaled = ρ / (scale_factor * scale_factor * scale_factor)
         energy += N * compute_lrc_energy_per_particle(ρ_scaled, p.rc)
     end
 
@@ -223,16 +278,15 @@ function total_energy_scaled(st, p, scale::Float64)::Float64
 end
 
 """
-    virtual_volume_exp_factors(st, p, dlnV)::Tuple{Float64, Float64}
+    virtual_volume_exp_factors(st, p, dlnV)::Tuple{Float64,Float64}
 
-Compute exp(-βΔU) factors for symmetric virtual volume changes (+/- dlnV).
+Return ⟨exp(-βΔU)⟩ factors for ±dlnV virtual volume changes.
 """
-function virtual_volume_exp_factors(st, p, dlnV::Float64)::Tuple{Float64, Float64}
+function virtual_volume_exp_factors(st, p, dlnV::Float64)::Tuple{Float64,Float64}
+    scale = exp(dlnV / 3.0)
     U0 = total_energy(st, p)
-    scale_plus = exp(dlnV / 3.0)
-    scale_minus = exp(-dlnV / 3.0)
-    U_plus = total_energy_scaled(st, p, scale_plus)
-    U_minus = total_energy_scaled(st, p, scale_minus)
+    U_plus = total_energy_scaled(st, p, scale)
+    U_minus = total_energy_scaled(st, p, 1.0 / scale)
     exp_plus = exp(-p.β * (U_plus - U0))
     exp_minus = exp(-p.β * (U_minus - U0))
     return exp_plus, exp_minus

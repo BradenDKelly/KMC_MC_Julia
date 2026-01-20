@@ -23,6 +23,7 @@ module MolSim
 module EOS
     include("EOS/NKEOS.jl")            # Python reference port (NKEOS)
     include("EOS/NKEOSAuthor.jl")      # Author wrapper (unit conversions)
+    include("EOS/LJTholAllen.jl")      # Thol et al. EOS (Allen/Tildesley Python port)
 end
 
 # Analysis submodule

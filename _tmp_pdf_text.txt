@@ -1,0 +1,2564 @@
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+Contents lists available at ScienceDirect
+
+Chemical Engineering Journal
+
+journal homepage: www.elsevier.com/locate/cej
+
+An eﬃcient kinetic Monte Carlo scheme for computing Helmholtz free
+energy and entropy in bulk ﬂuids and adsorption systems
+
+T
+
+Shiliang (Johnathan) Tan, D.D. Do
+
+⁎
+
+, D. Nicholson
+
+School of Chemical Engineering, University of Queensland, St. Lucia, QLD 4072, Australia
+
+A R T I C L E I N F O
+
+A B S T R A C T
+
+Keywords:
+Bulk ﬂuids
+Thermodynamics
+Adsorption
+Helmholtz free energy
+Entropy
+Monte Carlo simulation
+Kinetic Monte Carlo simulation
+
+We present an eﬃcient kinetic Monte Carlo scheme to determine the Helmholtz free energy and entropy of bulk
+ﬂuids and adsorption systems. The method is made possible because this technique enables the accurate de-
+termination of the chemical potential. The Helmholtz free energy, A, is obtained by integrating the chemical
+potential with respect to the number of molecules, at constant volume and temperature, and the entropy is then
+determined from the fundamental thermodynamic equation A = E − TS. The entropy of bulk argon is found to
+be in excellent agreement with values calculated from the established equation of state (EOS). In a system with
+two co-existing phases we show that our method can determine the surface tension at the Gibbs dividing surface,
+without recourse to the mechanical route of Irving, Kirkwood and Buﬀ.
+
+We show that the intrinsic integral molecular Helmholtz free energy and entropy of the adsorbed phase,
+corrected for the surface excess, are independent of the size of the simulation box for all chemical potentials
+tested.
+
+The new procedure is illustrated for a range of gases commonly used in the characterization of porous solids
+(argon, nitrogen, carbon dioxide and ammonia) as adsorbates and a graphitic slit pore as the model adsorbent.
+
+1. Introduction
+
+The Metropolis Monte Carlo (mMC) simulation method, based on
+importance sampling, was ingeniously developed by scientists at the
+Los Alamos National Laboratory in the US, and has been widely used by
+scientists and engineers to determine equilibrium properties in nu-
+merous problems in chemistry and chemical engineering [1]. More
+recently, an alternative scheme based on the kinetic Monte Carlo (kMC)
+has been developed, and applied to a number of problems in colloid
+chemistry and to adsorption on surfaces and in conﬁned spaces [2–8].
+For example, various adsorbate transitions have been explored sys-
+tematically where it was found that kMC oﬀers distinct advantages over
+mMC [3] in systems with very high densities [9]. To ensure that equi-
+librium has been established, it is necessary to check the equality of
+chemical potential at all points in the system [9,10]. In traditional
+mMC, the chemical potential is usually determined by the Widom
+method [11,12], in which ghost particles are inserted into a number of
+frozen conﬁgurations. The accuracy of this method depends critically
+on the number of insertions, and decreases with increasing density, and
+is therefore very computationally intensive. By contrast, kMC provides
+an eﬃcient route for calculating the chemical potential at all densities
+[10,13].
+
+Other thermodynamic properties (i.e. Helmholtz free energy and
+entropy), are rarely studied in simulations, since there is no simple and
+satisfactory method for their determination in mMC [1]. The various
+methods that have been proposed [14–17], are either elaborate or
+cumbersome to apply [1]. Possibly the most beneﬁcial feature of kMC is
+the accurate determination of the chemical potential [10] and we can
+take advantage of this to determine the Helmholtz free energy and the
+entropy. Moreover, in non-homogenous systems (e.g. phase co-existence
+and adsorption systems), the Helmholtz free energy and entropy can be
+decomposed into contributions from the constituent phases of the
+system, allowing an analysis of the speciﬁc contributions to free energy
+and the entropy from these phases.
+
+Surface tension, associated with the boundary between two co-ex-
+isting phases, is commonly determined by the mechanical route of
+Irving and Kirkwood [18] or Kirkwood and Buﬀ [19]. Goujon et al. for
+example [20], employed this route to obtain the surface tension, and
+investigated the eﬀects on the calculated energy of the cut-oﬀ radius,
+the long range correction, the three-body interaction, the box size and
+shifting the potential to zero at the cut-oﬀ radius.
+
+In this work we use accurate values of chemical potential, de-
+termined by kMC, to ﬁnd the Helmholtz free energy and entropy, and as
+an alternative to the mechanical method, to calculate the surface
+
+⁎
+
+Corresponding author.
+E-mail address: d.d.do@uq.edu.au (D.D. Do).
+
+https://doi.org/10.1016/j.cej.2017.11.099
+Received 20 September 2017; Received in revised form 18 November 2017; Accepted 18 November 2017
+Available online 21 November 2017
+1385-8947/ © 2017 Elsevier B.V. All rights reserved.
+
+S.J. Tan et al.
+
+tension.
+
+For adsorption systems, we have developed a means to determine
+the intrinsic Helmholtz free energy of the adsorbed phase. We show that
+this intrinsic molar excess free energy is lower than the molar free
+energy of a bulk liquid because of the stabilization of the adsorbed layer
+by the solid surface, but approaches the molar energy of the pure liquid
+as adsorbate coverage increases.
+
+2. Theory
+
+2.1. Kinetic Monte Carlo
+
+A feature that distinguishes kMC from mMC is the absence of any
+acceptance criterion in a trial move. In mMC, many trial moves are
+rejected when the system energy is highly positive, due to repulsive
+overlap. In kMC all moves are accepted, even when there is a large
+overlap between molecules. Conﬁgurations with a strongly overlapping
+pair have an extremely short lifetime because one of them is highly
+likely to be selected in the move to generate the next conﬁguration. The
+Rosenbluth scheme [1] governing this procedure is outlined brieﬂy in
+the following sections.
+
+2.1.1. Molecular energy and mobility rate
+
+The molecular energy, ui, of a molecule i is calculated as the sum of
+the pairwise intermolecular potential energies of molecule i with other
+molecules. φi,j, plus the total energy of interaction φi,S with any solid
+atoms (constituting an external ﬁeld if an adsorbent is present):
+
+u
+
+i
+
+N
+∑=
+j
+=
+j
+≠
+
+1
+i
+
+φ
+
+i j
+,
+
++
+
+φ
+
+i S
+,
+
+(1)
+
+The mobility vi, of molecule i, which is a measure of the probability
+
+that it will move, is calculated from:
+
+=ν
+i
+
+exp(
+
+β u
+
+)
+
+i
+
+(2)
+
+where β = 1/kBT and kB is the Boltzmann constant. A molecule having a
+large molecular energy will therefore have a high mobility and possess
+a greater tendency to move. To select a candidate to move so as to
+maintain the stochastic nature of kMC, we apply a Rosenbluth scheme
+[1]. The time, during which the system stays in one conﬁguration, is
+inversely proportional to the total mobility of the system, deﬁned as the
+sum of all molecular mobilities (which is a measure of the energetic state
+of the current conﬁguration):
+
+R
+
+=
+
+N
+N
+∑ ∑
+v
+=
+i
+i
+1
+=
+=
+
+1
+
+i
+
+exp(
+
+βu
+
+)
+
+i
+
+(3)
+
+We refer to this as the “total rate”. Eq. (3) states that the current
+conﬁguration exists, on average, for a lifetime that is the inverse of the
+total rate, i.e. Δt = 1/R. Since many conﬁgurations will have the same
+total rate in the course of a simulation, the duration time follows a
+Poisson distribution law, i.e.
+
+Δ
+
+=t
+
+ξ
+ln(1/ )
+R
+
+where ξ is a random number (0 < ξ < 1).
+
+2.2. Chemical potential
+
+(4)
+
+In previous studies of kMC [2,3] we have proved that the chemical
+
+potential, µ, can be calculated from the following equation:
+
+1411
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+μ μ
+−
+
+Intra
+
+=
+
+k T
+B
+
+⎛
+3
+ln Λ
+⎝
+
+R
+〈 〉 ⎞
+V
+⎠
+
+(5)
+
+where μIntra accounts for the rotation and vibration for polyatomic
+molecules, Λ is the thermal de Broglie wavelength, V is the volume of
+the simulation box, and 〈R〉 is the time average of the total rate cal-
+culated from
+
+M
+∑
+K
+1
+=
+
+R
+〈 〉 =
+
+t R
+(Δ )
+K
+K
+
+τ
+
+τ
+;
+
+=
+
+M
+∑
+K
+1
+=
+
+t
+Δ
+K
+
+(6)
+
+in which M is the number of conﬁgurations, τ is the total time of the
+simulation and ΔtK/τ is the fraction of the total time spent in conﬁg-
+uration K (we use upper case subscripts to denote conﬁguration number
+and lower case subscripts to denote a molecule). Substituting Eq. (4)
+into Eq. (6), we get:
+
+M
+∑
+K
+1
+=
+
+ξ
+)K
+
+ln(1 /
+R
+
+K
+
+R
+K
+
+τ
+
+R
+〈 〉 =
+
+=
+
+M
+τ
+
+=
+
+1
+τ
+〈 〉
+
+(7)
+
+1
+
+)
+
+=
+
+=
+
+M
+
+ln(1/
+
+M
+. Here 〈τ〉 is the average
+ξ
+in which we have used ∑
+K
+K
+lifetime of a conﬁguration over the whole simulation, and is a function
+of the number of molecules in the system at a given volume and tem-
+perature [10]. To understand the average lifetime, we consider the
+extreme case of one molecule in the system; in this case, the total rate is
+1, therefore the total time is M and hence the average lifetime is 1.
+When there are more molecules the average lifetime of a conﬁguration
+for a stable system is less than 1.The total rate R is a measure of the
+interactions among the various entities in the system, and therefore it is
+informative to decompose the chemical potential into two contribu-
+tions: one is the ideal gas contribution and the other is the excess
+contribution, which accounts for the energy of interaction between the
+entities (molecules and surface atoms). We rewrite Eq. (5) as the sum of
+the ideal gas and excess chemical potentials as follows:
+
+μ μ
+−
+
+Intra
+
+=
+
+μ
+
+IG
+
++
+
+ex
+
+μ
+
+=
+
+k T
+B
+
+⎛
+3
+ln Λ
+⎝
+
+N
+V
+
+⎞
+⎠
+
++
+
+k T
+B
+
+ln
+
+R
+〈 〉 ⎞
+N
+⎠
+
+⎛
+⎝
+
+(8)
+
+〈R〉/N is the average molecular mobility over the whole course of a
+simulation. Using Eq. (7), we express the excess chemical potential in
+terms of the average lifetime:
+
+ex
+
+βμ
+
+= −
+
+ln(
+
+N τ
+)
+〈 〉
+
+(9)
+
+Since the mean residence time, 〈τ〉, is a function of N for a given
+volume and temperature, the RHS of the above equation is a function of
+N.
+
+2.3. Helmholtz free energy
+
+In a closed system, equilibrium is said to have been reached when
+the Helmholtz free energy has reached its minimum (see Appendix A for
+a derivation). For an isotropic homogenous system, the Helmholtz free
+energy is calculated from the following fundamental thermodynamic
+equation, relating the Helmholtz free energy to the Gibbs free energy
+and the work, PV:
+
+A G PV
+= −
+
+(10)
+
+where the Gibbs free energy can be computed from the chemical po-
+tential, G = μN, and the pressure P is calculated via the virial route.
+However, in a nonhomogeneous system, the calculation of the pressure
+tensor is extremely cumbersome, and therefore, we determine the
+
+S.J. Tan et al.
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+(3/2)
+
+N k T
+B
+
+, and the conﬁgurational energy and Helmholtz free
+=E
+K
+energy are calculated from the simulation. For polyatomic species, we
+present −S E
+
+. The integral molecular entropy is then =S
+
+S N/
+
+T/
+
+Intra
+
+.
+
+2.5. Surface tension
+
+The Helmholtz free energy can also be used to derive the surface
+tension when two phases coexist in the system, for example at vapour-
+liquid equilibrium. When the interface between the two phases is
+planar, the Gibbs construction locates the interface as the boundary
+between two regions of uniform gaseous and liquid density such that
+the number of molecules in the system is equal to that in the actual
+system [21]. The Helmholtz free energy of the system is then the sum of
+three terms: (1) the Helmholtz free energy of the uniform phase I,
+containing NI molecules, (2) the Helmholtz free energy of the uniform
+I molecules, and (3) the excess Helm-
+phase II, containing
+holtz free energy associated with the interface. The latter must be po-
+sitive to sustain the interface. Thus, we can write:
+
+= −
+
+N N
+
+N
+
+II
+
+A
+
+=
+
+I
+A
+
++
+
+II
+A
+
++
+
+ex
+
+A
+
+(16)
+
+where the Helmholtz free energies of the two uniform phases are given
+by
+
+I
+A
+
+=
+
+I
+N A
+(
+
+I
+) ;
+
+II
+A
+
+=
+
+II
+N A
+(
+
+)
+
+II
+
+(17)
+
+)I and A(
+
+)II are the molecular Helmholtz free energies of the
+where A(
+homogeneous phases I and II, respectively, determined from simula-
+tions of the bulk ﬂuids of these two phases. Therefore, the excess
+Helmholtz free energy can be calculated from Eq. (16), and the surface
+tension of the interface, γ, can be calculated from
+
+ex
+=A
+
+I II,
+
+γ Σ
+
+(18)
+
+Fig. 1. Plot of the excess chemical potential scaled by kT,
+against the
+number of molecules and density for bulk argon at 87 K, 120 K and 240 K in a 2 nm cubic
+box.
+
+N τ
+)
+〈 〉
+
+= −
+
+ln(
+
+βμ
+
+ex
+
+Helmholtz free energy via a thermodynamic route without the recourse
+to the pressure tensor. The thermodynamic route uses the fact that the
+chemical potential is a partial derivative of the Helmholtz free energy
+with respect to the number of molecules, at constant volume and
+temperature:
+
+N
+
+∫=βA
+
+1
+
+μ N dN
+)
+
+(
+
+(11)
+
+where ΣI II,
+
+is the area of the interface separating the two phases.
+
+In the same way as for the chemical potential, we decompose the
+
+Helmholtz free energy into ideal gas and excess contributions:
+
+2.6. Adsorption system
+
+A
+
+=
+
+IG
+
+A
+
++
+
+ex
+
+A
+
+where these are given by:
+
+IG
+
+βA
+
+=
+
+N
+
+∫
+
+1
+
+IG
+
+μ dN βA
+
+;
+
+ex
+
+=
+
+N
+
+∫
+
+1
+
+ex
+μ dN
+
+= −
+
+N
+
+∫
+
+1
+
+ln(
+
+Nτ dN
+)
+
+(12)
+
+(13)
+
+IG
+
+A
+
+=
+
+kT
+
+) 1]
+−
+
+3
+N V
+
+[ln(Λ /
+
+in which we have used Eq. (9). The ideal gas Helmholtz free energy can
+be obtained by analytically integrating the ideal gas chemical potential
+, and the excess Helmholtz free energy
+to get
+can be obtained by numerical quadrature, exploiting the accuracy of
+the chemical potential obtained from kMC. We show in Fig. 1 a plot of
+the excess chemical potential, −
+)], as a function of N for bulk
+ln(
+argon at three temperatures, covering the sub- and supercritical re-
+gions. The smooth behaviour of this function allows us to evaluate the
+integral in Eq. (13) reliably.Given the Helmholtz free energy, the in-
+tegral molecular Helmholtz free energy is:
+
+〈 〉N τ
+
+[
+
+=A
+
+A N/
+
+2.4. Entropy
+
+(14)
+
++
+
+TdS pdV
+−
+
+The fundamental thermodynamic equation for the internal energy,
+μdN , reduces to dE − TdS = 0 for a closed canonical
+dE
+=
+ensemble at constant V and N. This leads to the deﬁnition of the
+Helmholtz free energy in terms of the internal energy and the entropy,
+A = E − ST. The internal energy is the sum of the kinetic and conﬁg-
+urational energies, i.e. =
+, from which we can obtain the en-
+tropy:
+
+UK
+E
++
+
+E
+
+S
+
+=
+
+E
+K
+
+U A
++ −
+T
+
+(15)
+
+In Eq. (15) the kinetic energy for a monoatomic species is
+
+1412
+
+In an adsorption system, we can determine both the Helmholtz free
+energy of the whole system, and the intrinsic Helmholtz free energy of
+the adsorbed phase. The number of molecules associated with the ad-
+sorbed phase is normally calculated as an excess with respect to a re-
+ference amount, which is taken to be the number of molecules occu-
+pying a reference volume of the same density as that of the bulk phase.
+Here we adopt the same deﬁnition to maintain consistency between the
+
+Fig. 2. A schematic diagram of adsorption showing two diﬀerent sizes but having the
+same surface area.
+
+S.J. Tan et al.
+
+Table 1
+Molecular parameters.
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+excess amount and the excess Helmholtz free energy.
+We begin with the excess amount deﬁned as:
+
+Fluid
+
+Parameter
+
+Symbols
+
+Unit
+
+Value
+
+N N
+=
+
+ex
+
++
+
+N
+
+Ref
+
+(19)
+
+Argon [23]
+
+Argon
+
+Nitrogen, TraPPE
+
+N
+
+[24]
+
+Additional
+charge, M
+Atomic distance
+
+Carbon Dioxide,
+TraPPE [24]
+
+O
+
+C
+
+Atomic distance
+Angle
+
+Ammonia [25]
+
+N
+
+H
+Atomic distance
+
+σ
+ε/k
+
+σ
+ε/k
+q
+q
+
+DM-N
+
+σ
+ε/k
+q
+σ
+ε/k
+q
+DC-O
+Angle O-C-O
+
+σ
+ε/k
+q
+q
+DN-H
+
+nm
+K
+
+nm
+K
+E
+E
+
+nm
+
+nm
+K
+E
+nm
+K
+E
+nm
+o
+
+nm
+K
+E
+E
+nm
+
+Angle
+
+Angle H-N-H o
+
+0.3405
+119.8
+
+0.331
+36
+−0.482
+0.964
+
+0.055
+
+0.305
+79
+−0.35
+0.28
+27
+0.7
+0.116
+180
+
+0.3385
+170
+−1.035
+0.345
+1.00685, 1.0124,
+1.0124
+106
+
+ref , where ρB is
+where the reference number of molecules is
+the density of the bulk gas phase having the same chemical potential as
+the adsorption system, and Vref is the volume accessible to the adsorbate
+[22]. With this choice of the reference amount, the excess amount, Nex ,
+is constant, irrespective of how large the gas phase is as illustrated
+schematically in Fig. 2.
+
+Ref
+=N
+
+ρ V
+B
+
+In the spirit used to calculate the excess amount in a bulk ﬂuid, we
+deﬁne the excess for the Helmholtz free energy (A), the entropy (S) and
+the conﬁgurational energy (U) by:
+
+X
+
+=
+
+X
+
+ex
+
++
+
+X
+
+Ref
+
+(20)
+
+where X is A, S or U. The reference quantity XRef is that of the bulk gas
+phase occupying the reference volume at the same density as the bulk
+surroundings; for example the reference conﬁgurational energy is:
+
+Ref
+=U
+
+N
+
+Ref
+
+G
+
+U(
+
+)
+
+(21)
+
+Here U(
+
+)G is the molecular conﬁgurational energy of the bulk gas
+
+having the same chemical potential as that of the system.
+
+Knowing the excess quantity, the integral molecular quantity of the
+
+adsorbed phase is:
+
+ex
+=X
+
+ex
+X N/
+
+ex
+
+2.7. Molecular parameters
+
+(22)
+
+Argon, nitrogen, carbon dioxide and ammonia, are used to illustrate
+
+Fig. 3. (a) Pressure, (b) chemical potential, (c) integral molar Helmholtz free energy and (d) integral molar entropy of argon at 87 K, 120 K and 240 K in a 2 nm cubic box. The lines
+represent Equation of State (EOS) of Johnson et al. [30] and the symbols represents the simulated data.
+
+1413
+
+S.J. Tan et al.
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+the method. The molecular parameters are listed in Table 1. To simulate
+the bulk phase, we used a 2 nm cubic simulation box (unless stated),
+and periodic boundary conditions are imposed at all boundaries. The
+cut-oﬀ radius was taken as half the shortest length of the box side.
+
+To study the thermodynamics of phase transition on a surface, we
+used an example of nitrogen adsorption at 77 K on a corrugated gra-
+phite surface, modelled with the Fourier approximation equation de-
+veloped by Steele [26]. In addition to this corrugation, we took into
+account the diﬀerences in the polarizabilities of the carbon atom, par-
+allel and vertical to the surface, as suggested by Carlos and Cole [27],
+details of this graphite molecular model can be found in Prasetyo et al.
+[28]. As a second example we took adsorption of argon at 87 K in a
+graphitic slit pore, where we show the thermodynamics of capillary
+condensation. This pore is connected to the bulk gas surrounding at
+both ends. The pore wall consists of three graphene layers and the solid-
+ﬂuid potential energy is calculated with the Bojan-Steele equation, with
+the molecular parameters for a carbon atom in a graphene layer,
+and the interlayer spacing Δ of 0.3354 nm
+=σ
+CC
+[29]. The cross-parameters were calculated from the Lorentz-Berthelot
+mixing rule.
+
+0.34
+
+nm
+
+28
+
+k
+B
+
+=
+
+K
+
+CC
+
+/
+
+ε
+
+,
+
+3. Results
+
+3.1. Bulk ﬂuid
+
+We show in Fig. 3 the four basic thermodynamic variables: pressure,
+chemical potential, molar Helmholtz free energy (via the thermo-
+dynamic route) and molar entropy of the bulk ﬂuid argon at sub-critical
+temperatures of 87 K, 120 K and a supercritical temperature of 240 K.
+The simulated results from our method (with long range correction
+added to the molecular energy) are in excellent agreement with the EOS
+of Johnson et al. [30] and with the results obtained earlier by Fan et al.
+[10]. The percentage error of the chemical potential obtained with kMC
+scheme is typically less than 0.1%, showing the accuracy of the che-
+mical potential. The results for other ﬂuids are presented in Appendix B
+to demonstrate that the method is applicable equally to polyatomic and
+polar ﬂuids.
+
+In Fig. 4, we compare the Helmholtz free energy determined by the
+
+virial route with the thermodynamic route, and note that there is ex-
+cellent agreement. However, the success of the virial route depends
+critically on the determination of the pressure, which may not be ac-
+curate for dense systems. This is illustrated in Fig. 4a where the
+Helmholtz free energy of the dense phase at 87 K is fairly noisy, but if
+the pressure is determined with a suﬃciently long simulation, it is able
+to produce a more accurate result than the thermodynamic route, since
+this avoids the accumulation of errors in the process of integration
+(Fig. 4b). In addition, the virial route is strictly valid only for uniform
+systems and the thermodynamic route is the only method available for
+non-uniform system. An accurate determination of bulk ﬂuid properties
+is important in our assessment of the thermodynamic properties of the
+adsorption systems as we demonstrate below.
+
+3.1.1. Eﬀect of simulation box size
+
+The pressure and the chemical potential shown in Fig. 3 exhibit a
+typical van der Waals (vdW) loop for temperatures (87 K and 120 K)
+below the bulk critical temperature. In Fig. 5 we explore the eﬀects of
+the box size on the vdW behaviour for the four thermodynamic vari-
+ables: pressure, chemical potential, molar Helmholtz free energy and
+molar entropy. The box size clearly aﬀects the evolution of the vdW
+loop, notably for the chemical potential: for small box sizes, the vdW
+loop has a clear S-shape because of the small ﬂuctuations and because
+the number of molecules in the system is not suﬃcient to form stable
+co-existing phases. The regions that show an increase in the chemical
+potential with respect to the number of molecules are either stable or
+metastable, while the region that shows a decrease is unstable. This S-
+shape is similar to that observed in the classical work of Hansen and
+Verlet [31] who suppressed ﬂuctuations by dividing the box into re-
+gions and constraining the variation in the number of molecules in
+those regions. As the box size is increased, the vdW loop changes from a
+sigmoid shape to a step because the system forms two stable phases as
+evidenced by the constant chemical potential within the vdW loop. The
+evolution of the system into two stable co-existing phases has been
+studied by a number of workers [32,33]. Interestingly, the molar en-
+tropy, is not aﬀected by the system size in the stable regions of gas and
+liquid phases. The entropy decreases with the number of molecules as
+expected because of the reduction in the degree of freedom as the
+
+Fig. 4. The Helmholtz free energies determined via the virial (unﬁlled) and thermodynamic (ﬁlled) routes for argon at (a) 87 K (circle), 120 K (triangle) and (b) 240 K (square). The lines
+represent Equation of State (EOS) of Johnson et al. [30].
+
+1414
+
+S.J. Tan et al.
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+Fig. 5. (a) Pressure, (b) chemical potential, (c) Helmholtz free energy and (d) integral and diﬀerential molar entropy of argon at 87 K. The lines represent the EOS of Johnson et al. [30]
+and symbols represents the simulated data of diﬀerent size systems from smallest (circle) to largest (square).
+
+Table 2
+Surface tension of argon.
+
+Values are in mN/m
+
+Surface tension
+
+This work at 87 K
+Simulation at 85 K, Goujon et al. [20]
+Experiment at 87 K, Lemmon and Penoncello [34]
+
+15.70
+15.37
+12.607
+
+Standard
+deviation
+
+0.30
+0.33
+
+Fig. 7. Total and excess (insert) Helmholtz free energy of argon on surface at 87 K for
+diﬀerent box sizes. The inset shows the excess Helmholtz free energy.
+
+system becomes denser.
+
+3.1.2. Surface tension
+
+The surface tension in a system with two phases separated by a
+plane interface is most often obtained using the mechanical route of
+Irving, Kirkwood and Buﬀ [19]. Here we oﬀer an alternative route
+using the Helmholtz free energy of the system. In our simulation of the
+bulk phase of argon at 87 K, the vapour is in equilibrium with the liquid
+
+Fig. 6. Adsorption isotherm for argon on surface at 87 K for three diﬀerent box sizes.
+
+1415
+
+S.J. Tan et al.
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+Fig. 8. (a) Total and (b) excess molar entropy of argon on surface at 87 K for diﬀerent box height in the Z-direction.
+
+phase when the chemical potential is constant (Fig. 5b). Knowing the
+Helmholtz free energy and using the smoothed density distribution
+(Appendix C) across the two phases, we determined the position of the
+Gibbs dividing plane at the interface, and hence the number of mole-
+cules in each phase. With the knowledge of the molar Helmholtz free
+energy of the pure gas phase and that of the pure liquid phase, we
+determined the excess Helmholtz free energy and calculated the surface
+tension from Eq. (18). The results are shown in Table 2, and are in good
+agreement with previous simulations by Goujon et al. [20] obtained
+using the mechanical route of Kirkwood and Buﬀ [19]. Both values of
+surface tension are about 20% higher than the reported experimental
+data, and this is attributed by Goujon et al. [20], to the neglect of the
+three-body interactions.
+
+3.2. Adsorption
+
+We take adsorption of argon on a graphite surface as an example of
+the application of our method to determine the Helmholtz free energy
+of non-uniform adsorption systems. Fig. 6 shows plots of the excess
+
+density versus the chemical potential for three diﬀerent box sizes. These
+isotherms very nearly overlap, indicating that the excess amount is
+independent of the box size.
+
+The integral molar Helmholtz free energies for the above three box
+sizes are shown in Fig. 7. With the exception of the sub-monolayer
+region, the molar Helmholtz free energy is smaller in larger boxes be-
+cause there is a larger contribution from the molecules in the gas phase
+in the larger boxes. Therefore, it is informative to determine the free
+energy intrinsic to the adsorbed phase, by calculating the excess
+Helmholtz free energy using Eq. (19). The inset in Fig. 7 shows that the
+excess Helmholtz free energy is the same for all three box sizes.
+
+Fig. 8a shows that the same conclusion can be reached for the molar
+entropy. In the sub-monolayer region, the integral molar entropy de-
+creases to a minimum when the ﬁrst adsorbate layer is complete be-
+cause there is a decrease in the number of available conﬁgurations. The
+approach to the entropy minimum is diﬀerent for diﬀerent box sizes;
+again because there is a larger contribution from molecules in the gas
+phase in the larger boxes but, as found for the Helmholtz energy, the
+excess molar entropy is the same for all box sizes as shown in Fig. 8b.
+
+Fig. 9. Adsorption isotherm (ﬁlled) and integral molar entropy (unﬁlled) of (a) nitrogen on surface at 77 K and (b) argon in 2 nm open ended slit pore at 87 K.
+
+1416
+
+S.J. Tan et al.
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+The minimum molar entropy at the monolayer density is 53 J/mol/K,
+which is slightly lower than the molar entropy of the pure liquid
+(54.7 J/mol/K), suggesting that the adsorbed phase behaves like a
+compressed liquid at completion of the ﬁrst layer. Beyond the mono-
+layer region, the molar entropy increases and becomes asymptotic to
+the molar entropy of the pure liquid, indicating that the multi-layered
+adsorbed ﬁlm resembles the bulk liquid.
+
+Nitrogen adsorbed on graphite at 77 K has a ﬁrst order transition
+from a supercritical state to a commensurate solid in the ﬁrst layer,
+which is also exhibited for adsorption in a slit shaped mesopore, prior to
+a ﬁrst order capillary condensation. A method for the determination of
+the Helmholtz free energy, when the chemical potential plot vs the
+number of molecules shows a ﬁrst order transition, is given in Appendix
+D. The isotherm for nitrogen adsorption on a graphite surface is pre-
+sented in Fig. 9a, and shows a ﬁrst order transition when the surface
+density reaches 9.3 µmol/m2. At this density, the excess molar entropy
+is 43 J/mol/K, compared to the molar entropy of the bulk liquid ni-
+trogen of 47 J/mol/K, indicating that the ﬁrst layer is in a supercritical
+state prior to the transition. The ﬁrst order transition changes the state
+of the adsorbate from a supercritical state to a commensurate state, as
+evidenced by the density of 10.54 µmol/m2, theoretically calculated for
+a commensurate packing on graphite [35]. This transition is associated
+with a sharp decrease in the entropy, to 31 J/mol/K, a value that is
+much lower than that of the bulk liquid. In fact, a sharp decrease in the
+entropy occurs whenever there is a ﬁrst order transition in the ad-
+sorbate. To illustrate this point, we present the adsorption isotherm for
+argon in a 2 nm open-ended graphitic slit pore in Fig. 9b, which shows
+that a capillary condensation (ﬁrst order transition) occurs at 8.5 kPa.
+This transition has been discussed in a previous paper [30]. The
+
+interesting feature here is that the molar excess entropy decreases
+sharply to 42 J/mol/K, which is well below the molar entropy of the
+bulk liquid. This indicates that the argon is strongly adsorbed in a 2 nm
+pore and forms a highly compressed liquid which is corroborated by the
+fact that the pore density is much higher than the bulk liquid density
+(35 kmol/m3).
+
+4. Conclusion
+
+In this paper we have presented an eﬃcient scheme for the accurate
+determination of the chemical potential, the molar Helmholtz free en-
+ergy and the molar entropy using a kinetic Monte Carlo method. This
+scheme is discussed in detail for argon and further illustrated in the
+Appendix for a range of molecules. The molar Helmholtz free energy
+and the molar entropy for the bulk ﬂuids agree well with results from
+the relevant equations of state. In addition, using the excess Helmholtz
+free energy at the Gibbs interface, we are able to determine the surface
+tension when two phases co-exist, oﬀering an alternative to the me-
+chanical route. The concept of excess used to determine the amount
+adsorbed in adsorption systems is applied to determine the excess
+(adsorbed) molecular Helmholtz free energy and entropy, which are
+found to be independent of the size of the simulation box for a given
+pressure. Finally, we explored the application of the excess entropy to
+adsorption systems in a mesopore where there is a phase transition.
+
+Acknowledgement
+
+This work is supported by the Australian Research Council
+
+(DP160103540).
+
+Appendix A.
+
+The fundamental equation of thermodynamics is:
+
+dE
+
+=
+
+TdS PdV
+−
+
++
+
+μdN
+
+The Helmholtz free energy and its derivative are
+
+A
+
+= −
+
+E TS
+
+dA
+
+=
+
+dE TdS SdT
+
+−
+
+−
+
+Substitute Eq. (A1.1) into Eq. (A1.3):
+
+dA
+
+=
+
+TdS PdV
+−
+
++
+
+μdN TdS SdT
+
+−
+
+−
+
+dA
+
+= −
+
+SdT PdV
+−
+
++
+
+μdN
+
+(A1.1)
+
+(A1.2)
+
+(A1.3)
+
+(A1.4.1)
+
+(A1.4.2)
+
+Thus, at constant T, V and N (canonical ensemble), we have dA = 0. Therefore, the minimum Helmholtz free energy is attained at equilibrium in
+
+a canonical ensemble. In addition, we take the advantage of the accurate chemical potential determined from canonical kMC:
+
+dA
+dN
+
+⎛
+⎝
+
+⎞
+⎠
+V T,
+
+=
+
+μ
+
+Therefore, we can determine the Helmholtz free energy by integration Eq. (A1.5) with respect to N
+
+A
+
+∫
+
+A
+1
+
+N
+
+∫=dA
+
+1
+
+μ N V T dN
+,
+
+(
+
+)
+
+,
+
+where A1 is the Helmholtz free energy of one molecule, given by
+
+A
+1
+
+=
+
+kT
+
+3
+[ln(Λ /
+
+V
+
+) 1]
+−
+
+1417
+
+(A1.5)
+
+(A1.6)
+
+(A1.7)
+
+S.J. Tan et al.
+
+Appendix B.
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+Here, we show the chemical potential, the Helmholtz free energy and the integral molar entropy of sub-critical for supercritical of nitrogen
+(Fig. 10), carbon dioxide (Fig. 11) and ammonia (Fig. 12). These ﬁgures show that the simulation results (with long range correction added to the
+molecular energy) agree well with their respective EOS. Note that the entropy presented here for the polyatomic system, excludes the kinetic energy
+(Eq. (15)).
+
+200K
+
+120K
+
+87K
+
+(b)
+
+-4
+
+-6
+
+-8
+
+)
+-
+(
+
+,
+l
+
+a
+
+i
+t
+
+t
+
+n
+e
+o
+P
+
+l
+
+i
+
+a
+c
+m
+e
+h
+C
+
+-10
+
+-12
+
+100
+
+(a)
+
+)
+a
+P
+M
+
+(
+e
+r
+u
+s
+s
+e
+r
+
+P
+
+)
+l
+o
+m
+/
+J
+k
+(
+F
+
+,
+y
+g
+r
+e
+n
+E
+e
+e
+r
+F
+z
+t
+l
+o
+h
+m
+e
+H
+
+l
+
+80
+
+60
+
+40
+
+20
+
+0
+
+-20
+
+0
+
+-6
+
+-8
+
+-10
+
+-12
+
+-14
+
+-16
+
+-18
+
+-20
+
+-22
+
+-24
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+(c) 
+
+Density (kmol/m3)
+
+-14
+
+0
+
+140
+
+(d)
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+Density (kmol/m3)
+
+)
+
+K
+
+.
+l
+o
+m
+/
+J
+(
+
+a
+r
+t
+n
+I
+E
+
+-
+
+S
+
+,
+y
+p
+o
+r
+t
+n
+E
+
+l
+
+r
+a
+o
+M
+
+l
+
+a
+r
+g
+e
+t
+n
+I
+
+120
+
+100
+
+80
+
+60
+
+40
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+Density (kmol/m3)
+
+Density (kmol/m3)
+
+Fig. 10. (a) Pressure, (b) chemical potential, (c) Helmholtz free energy and (d) integral molar entropy of Nitrogen at 87 K, 120 K and 200 K. The lines represent EOS of Span et al. [36] and
+the symbols represents the simulated data.
+
+1418
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+S.J. Tan et al.
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+(a)
+
+400K
+
+300K
+
+200K
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+Density (kmol/m3)
+
+(c)
+
+120
+
+100
+
+80
+
+60
+
+40
+
+20
+
+0
+
+-20
+
+-40
+
+-60
+
+-80
+
+-20
+
+-25
+
+-30
+
+-35
+
+-40
+
+-45
+
+)
+a
+P
+M
+
+(
+e
+r
+u
+s
+s
+e
+r
+
+P
+
+)
+l
+o
+m
+/
+J
+k
+(
+
+A
+
+,
+y
+g
+r
+e
+n
+E
+e
+e
+r
+F
+z
+t
+l
+o
+h
+m
+e
+H
+
+l
+
+(b)
+
+-6
+
+-8
+
+-10
+
+-12
+
+-14
+
+-16
+
+(d)
+
+-18
+
+0
+
+160
+
+140
+
+120
+
+100
+
+80
+
+60
+
+40
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+Density (kmol/m3)
+
+)
+-
+(
+
+,
+l
+
+a
+
+i
+t
+
+t
+
+n
+e
+o
+P
+
+l
+
+i
+
+a
+c
+m
+e
+h
+C
+
+)
+
+K
+
+.
+l
+
+o
+m
+/
+J
+(
+
+a
+r
+t
+
+I
+
+n
+E
+
+-
+
+S
+
+,
+y
+p
+o
+r
+t
+n
+E
+
+l
+
+r
+a
+o
+M
+
+l
+
+a
+r
+g
+e
+t
+n
+I
+
+-50
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+0
+
+5
+
+10
+
+15
+
+20
+
+25
+
+30
+
+Density (kmol/m3)
+
+Density (kmol/m3)
+
+Fig. 11. (a) Pressure, (b) chemical potential, (c) Helmholtz free energy and (d) integral molar entropy of Carbon dioxide at 200 K, 300 K and 400 K. The lines represent EOS of Span and
+Wagner [35] and the symbols represent the simulated data.
+
+1419
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+S.J. Tan et al.
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+(a)
+
+120
+
+100
+
+)
+a
+P
+M
+
+(
+e
+r
+u
+s
+s
+e
+r
+
+P
+
+80
+
+60
+
+40
+
+20
+
+0
+
+-20
+
+0
+
+-30
+
+-35
+
+-40
+
+-45
+
+-50
+
+-55
+
+)
+l
+o
+m
+/
+J
+k
+(
+
+A
+
+,
+y
+g
+r
+e
+n
+E
+e
+e
+r
+F
+z
+t
+l
+
+o
+h
+m
+e
+H
+
+l
+
+-60
+
+0
+
+(c)
+
+450K
+
+400K
+
+350K
+
+10
+
+20
+
+30
+
+Density (kmol/m3)
+
+(b)
+
+-8
+
+-9
+
+-10
+
+-11
+
+-12
+
+-13
+
+)
+-
+(
+
+,
+l
+a
+i
+t
+n
+e
+t
+o
+P
+
+l
+
+i
+
+a
+c
+m
+e
+h
+C
+
+40
+
+-14
+
+0
+
+140
+
+(d)
+
+)
+
+K
+
+.
+l
+o
+m
+/
+J
+(
+
+a
+r
+t
+n
+E
+
+I
+
+-
+
+S
+
+,
+y
+p
+o
+r
+t
+n
+E
+
+l
+
+r
+a
+o
+M
+
+l
+
+a
+r
+g
+e
+n
+I
+
+t
+
+120
+
+100
+
+80
+
+60
+
+40
+
+0
+
+10
+
+20
+
+30
+
+40
+
+10
+
+20
+
+30
+
+40
+
+Density (kmol/m3)
+
+10
+
+20
+
+30
+
+40
+
+Fig. 12. (a) Pressure, (b) chemical potential, (c) Helmholtz free energy and (d) integral molar entropy of Ammonia at 350 K, 400 K and 450 K. The lines represent EOS of Roth et al. [37]
+and the symbols represent the simulated data.
+
+Density (kmol/m3)
+
+Density (kmol/m3)
+
+Appendix C.
+
+The local density distribution (LDD) for three selected points in Fig. 5d, are presented in Fig. 13. With the aid of the LDD, the number of
+molecules in the vapour and liquid phase can be determined by applying the concept of equal areas, as implemented in the determination of the
+Gibbs dividing surface. The number of molecules in those phases is then applied in Eq. (17b) to calculate the surface tension.
+
+)
+-
+(
+
+l
+
+s
+e
+c
+i
+t
+r
+a
+p
+
+f
+
+o
+r
+e
+b
+m
+u
+N
+
+18
+
+16
+
+14
+
+12
+
+10
+
+8
+
+6
+
+4
+
+2
+
+0
+
+1300 Molecules
+1600 Molecules
+2300 Molecules
+
+0
+
+2
+
+4
+
+6
+
+8
+
+10
+
+Distance (nm)
+
+Fig. 13. Local density distribution for vapour-liquid equilibrium of argon at 87 K.
+
+1420
+
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+S.J. Tan et al.
+
+Appendix D.
+
+Chemical Engineering Journal 334 (2018) 1410–1421
+
+The Helmholtz free energy is calculated formally by integrating the chemical potential with respect to the number of molecule in the region
+
+where the function is continuous, i.e.
+
+N
+
+∫=A
+
+1
+
+μdN
+
+Across the ﬁrst order transition, the change in the Helmholtz free energy is simply:
+
+(A4.1)
+
+Δ
+
+A
+
+=
+
+μ N
+(
+eq
+
+−
+
+N
+
+)
+
+After
+
+Before
+
+(A4.2)
+where μeq is the chemical potential at the ﬁrst order transition, and NAfter and NBefore are the numbers of molecules after and before the transition.
+Therefore, the free energy is simply the sum of Eqs. (A4.1) and (A4.2).
+
+References
+
+[20] F. Goujon, P. Malfreyt, D.J. Tildesley, The gas-liquid surface tension of argon: a
+
+reconciliation between experiment and simulation, J. Chem. Phys. 140 (24) (2014)
+244710.
+
+[1] D. Frenkel, B. Smit, Understanding molecular simulation: from algorithms to ap-
+
+[21] D. Nicholson, N.G. Parsonage, Computer Simulation and the Statistical Mechanics
+
+plications, second ed., Academic Press, San Diego, 2002, p. 638.
+
+of Adsorption, Academic Press, London, 1982.
+
+[2] E.A. Ustinov, D.D. Do, Application of kinetic Monte Carlo method to equilibrium
+systems: vapour–liquid equilibria, J. Colloid Interface Sci. 366 (1) (2012) 216–223.
+[3] E.A. Ustinov, D.D. Do, Two-dimensional order-disorder transition of argon mono-
+layer adsorbed on graphitized carbon black: kinetic Monte Carlo method, J. Chem.
+Phys. (2012) 136 134702/1-134702/10.
+
+[4] E.A. Ustinov, D.D. Do, Thermodynamic analysis of ordered and disordered mono-
+layer of argon adsorption on graphite, Langmuir 28 (25) (2012) 9543–9553.
+[5] D.T. Gillespie, Exact stochastic simulation of coupled chemical reactions, J. Phys.
+
+Chem. 81 (25) (1977) 2340–2361.
+
+[6] C.C. Battaile, The kinetic Monte Carlo method: foundation, implementation, and
+application, Comput. Methods Appl. Mech. Eng. 197 (41–42) (2008) 3386–3398.
+[7] E.A. Ustinov, D.D. Do, Two-dimensional order-disorder transition of argon mono-
+layer adsorbed on graphitized carbon black: kinetic Monte Carlo method, J. Chem.
+Phys. 136 (13) (2012) 134702.
+
+[8] V.T. Nguyen, D.D. Do, D. Nicholson, E.A. Ustinov, Application of the kinetic Monte
+Carlo method in the microscopic description of argon adsorption on graphite, Mol.
+Phys. 110 (18) (2012) 2281–2294.
+
+[9] V.T. Nguyen, S. Tan, D.D. Do, D. Nicholson, Application of kinetic Monte Carlo
+
+method to the vapour–liquid equilibria of associating ﬂuids and their mixtures, Mol.
+Simul. (2015) 1–13.
+
+[22] L. Herrera, D.D. Do, D. Nicholson, A Monte Carlo integration method to determine
+accessible volume, accessible surface area and its fractal dimension, J. Colloid
+Interface Sci. 348 (2) (2010) 529–536.
+
+[23] A. Michels, H. Wijker, H. Wijker, Isotherms of argon between 0°c and 150°c and
+
+pressures up to 2900 atmospheres, Physica 15 (7) (1949) 627–633.
+
+[24] J.J. Potoﬀ, J.I. Siepmann, Vapor – liquid equilibria of mixtures containing alkanes,
+
+carbon dioxide and nitrogen, AIChE 47 (7) (2001) 1676–1683.
+
+[25] T. Kristof, J. Vorholz, J. Liszi, B. Rumpf, G. Maurer, A simple eﬀective pair potential
+
+for the molecular simulation of the thermodynamic properties of ammonia, Mol.
+Phys. 97 (10) (1999) 1129–1137.
+
+[26] W.A. Steele, The physical interaction of gases with crystalline solids: I. Gas-solid
+energies and properties of isolated adsorbed atoms, Surf. Sci. 36 (1) (1973)
+317–352.
+
+[27] W.E. Carlos, M.W. Cole, Interaction between a He atom and a graphite surface, Surf.
+
+Sci. 91 (1) (1980) 339–357.
+
+[28] L. Prasetyo, S. Tan, Y. Zeng, D.D. Do, D. Nicholson, An improved model for N2
+adsorption on graphitic adsorbents and graphitized thermal carbon black—The
+importance of the anisotropy of graphene, J. Chem. Phys. 146 (18) (2017) 184702.
+[29] M.J. Bojan, W.A. Steele, Computer simulation of physisorption on a heterogeneous
+
+surface, Surf. Sci. 199 (3) (1988) L395–L402.
+
+[10] C. Fan, D.D. Do, D. Nicholson, E.A. Ustinov, Chemical potential, Helmholtz free
+
+[30] J.K. Johnson, J.A. Zollweg, K.E. Gubbins, The lennard-jones equation of state re-
+
+energy and entropy of argon with kinetic Monte Carlo simulation, Mol. Phys. 112
+(1) (2013) 60–73.
+
+[11] Widom, Some topics in the theory of ﬂuids, J. Chem. Phys. 39 (11) (1963)
+
+2808–2812.
+
+[12] B. Widom, Potential-distribution theory and the statistical mechanics of ﬂuids, J.
+
+Phys. Chem. 86 (6) (1982) 869–872.
+
+[13] E.A. Ustinov, D.D. Do, Application of kinetic Monte Carlo method to equilibrium
+systems: vapour-liquid equilibria, J. Colloid Interface Sci. 366 (1) (2012) 216–223.
+
+[14] J. Puibasset, Grand potential, helmholtz free energy, and entropy calculation in
+heterogeneous cylindrical pores by the grand canonical Monte Carlo simulation
+method, J. Phys. Chem. B 109 (1) (2005) 480–487.
+
+[15] S. Prestipino, P. Giaquinta, Statistical entropy of a lattice-gas model: multiparticle
+
+correlation expansion, J. Statist. Phys. 96 (1–2) (1999) 135–167.
+
+[16] S.D. Hong, Evaluation of the excess free energy for two-center-Lennard-Jones li-
+quids using the bent eﬀective acceptance ratio, Bull. Korean Chem. Soc. 21 (7)
+(2000) 697–700.
+
+[17] H. Do, J.D. Hirst, R.J. Wheatley, Rapid calculation of partition functions and free
+
+energies of ﬂuids, J. Chem. Phys. 135 (17) (2011) 174105–174107.
+
+[18] J.P.R.B. Walton, D.J. Tildesley, J.S. Rowlinson, J.R. Henderson, The pressure tensor
+
+at the planar surface of a liquid, Mol. Phys. 48 (6) (1983) 1357–1368.
+
+[19] J.G. Kirkwood, F.P. Buﬀ, The statistical mechanical theory of surface tension, J.
+
+Chem. Phys. 17 (1949) 338–343.
+
+visited, Mol. Phys. 78 (3) (1993) 591–618.
+
+[31] J.-P. Hansen, L. Verlet, Phase transitions of the Lennard-Jones system, Phys. Rev.
+
+184 (1969) 151.
+
+[32] M. Schrader, P. Virnau, K. Binder, Simulation of vapor-liquid coexistence in ﬁnite
+volumes: a method to compute the surface free energy of droplets, Phys. Rev. E 79
+(6) (2009) 061104.
+
+[33] S. Tan, L. Prasetyo, Y. Zeng, D.D. Do, D. Nicholson, On the consistency of NVT, NPT,
+μVT and Gibbs ensembles in the framework of kinetic Monte Carlo – Fluid phase
+equilibria and adsorption of pure component systems, Chem. Eng. J. 316 (2017)
+243–254.
+
+[34] E.W. Lemmon, S.G. Penoncello, The surface tension of air and air component
+
+mixtures, Springer US, Boston, MA, 1994, pp. 1927–1934.
+
+[35] R. Span, W. Wagner, A new equation of state for carbon dioxide covering the ﬂuid
+region from the triple-point temperature to 1100 K at pressures up to 800 MPa, J.
+Phys. Chem. Ref. Data 25 (6) (1996) 1509–1596.
+
+[36] R. Span, E.W. Lemmon, R.T. Jacobsen, W. Wagner, A. Yokozeki, A reference
+
+equation of state for the thermodynamic properties of nitrogen for temperatures
+from 63.151 to 1000 K and pressures to 2200 MPa, J. Phys. Chem. Ref. Data 29 (6)
+(2000) 1361–1433.
+
+[37] R. Tillner-Roth, F. Harms-Watzenberg, H. Baehr, Eine neue fundamentalgleichung
+
+für ammoniak, DKV Tagungsbericht 20 (1993) 167–180.
+
+1421
+
+

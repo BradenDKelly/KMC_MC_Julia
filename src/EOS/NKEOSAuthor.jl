@@ -55,6 +55,13 @@ Compatibility wrapper for reduced units (same as alj_res_reduced).
 alj_res_author(T::Float64, ρ::Float64)::Float64 = alj_res_reduced(T, ρ)
 
 """
+    chemical_potential_nkeos_author(T, ρ)
+
+Residual chemical potential in reduced units (same as chemical_potential_nkeos).
+"""
+chemical_potential_nkeos_author(T::Float64, ρ::Float64)::Float64 = chemical_potential_nkeos(T, ρ)
+
+"""
     getPress_SI(T, ρ)
 
 Pressure in Pa. T [K], ρ [kg/m^3] in LJ reduced units with σ, ε as above.

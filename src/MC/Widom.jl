@@ -74,6 +74,7 @@ function widom_deltaU(st::LJState, p::LJParams; test_type::Int=1)::Float64
     return ΔU
 end
 
+
 """
     rmin_to_particles(st, x)::Float64
 
@@ -335,6 +336,7 @@ function widom_mu_ex!(acc::WidomAccumulator, st::LJState, p::LJParams; ninsert::
     return mu_ex(acc, β)
 end
 
+
 """
     widom_mu_ex_cavity!(acc::WidomAccumulator, st::LJState, p::LJParams; ninsert::Int=1000, rmin_cut::Float64=0.85) -> (μ_ex::Float64, pbias::Float64)
 
@@ -444,3 +446,4 @@ function widom_deltaU_at_point(st::LJState, p::LJParams, test_x::Float64, test_y
     
     return ΔU
 end
+

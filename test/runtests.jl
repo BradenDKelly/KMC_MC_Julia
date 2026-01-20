@@ -234,6 +234,9 @@ include("test_multicomponent_relabel.jl")
 include("test_multicomponent_pair_sanity.jl")
 include("test_multicomponent_widom.jl")
 
+# Include eKMC energy consistency test
+include("test_ekmc_energy_consistency.jl")
+
 # Conditional include for slow tests (long-run ensemble convergence)
 if RUN_SLOW_TESTS
     include("test_pressure_identities_slow.jl")

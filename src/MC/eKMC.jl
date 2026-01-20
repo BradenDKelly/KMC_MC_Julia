@@ -19,9 +19,9 @@ using Random
 using StaticArrays
 using Base.Threads
 
-const OVERLAP_U_REDUCED = 100.0
-# Reduced cutoff where U/ε = 100 for σ=1, ε=1 (precomputed)
-const OVERLAP_R_REDUCED = 0.7521055053376686
+# Note: OVERLAP_U_REDUCED and OVERLAP_R_REDUCED are defined in Observables.jl
+# (included before this file in MolSim.jl), and used by lj_pair_u_from_r2()
+# No need to redefine them here.
 
 mutable struct eKMCState
     N::Int
@@ -41,14 +41,18 @@ end
 mutable struct ChemicalPotentialAccumulator
     t_total::Float64
     S::Float64                    # sum (R/N) * dt
+    S_sq::Float64                 # sum ((R/N)^2) * dt for variance
+    t_total_sq::Float64           # sum (dt^2) for effective sample size
     count::Int
 end
 
-ChemicalPotentialAccumulator() = ChemicalPotentialAccumulator(0.0, 0.0, 0)
+ChemicalPotentialAccumulator() = ChemicalPotentialAccumulator(0.0, 0.0, 0.0, 0.0, 0)
 
 function reset!(acc::ChemicalPotentialAccumulator)
     acc.t_total = 0.0
     acc.S = 0.0
+    acc.S_sq = 0.0
+    acc.t_total_sq = 0.0
     acc.count = 0
     return nothing
 end
@@ -86,7 +90,6 @@ function compute_all_m_R!(st::eKMCState, p::LJParams)
         st.m[i] = m_i
         st.R += m_i
     end
-    return nothing
     return nothing
 end
 
@@ -135,7 +138,6 @@ function update_phi_after_move!(i::Int, oldx::Float64, oldy::Float64, oldz::Floa
     end
 
     # Recompute mobilities and total rate from updated phi
-    # Recompute mobilities and total rate from updated phi
     R = 0.0
     @inbounds for j in 1:N
         st.m[j] = exp(β * st.phi[j])
@@ -182,7 +184,10 @@ function ekmc_step!(st::eKMCState, p::LJParams, acc::ChemicalPotentialAccumulato
     end
 
     acc.t_total += dt
-    acc.S += (R / N) * dt
+    R_over_N = R / N
+    acc.S += R_over_N * dt
+    acc.S_sq += (R_over_N * R_over_N) * dt
+    acc.t_total_sq += dt * dt
     acc.count += 1
 
     i = sample_particle_by_mobility(st)
@@ -239,6 +244,32 @@ function mu_ex(acc::ChemicalPotentialAccumulator, T::Float64)::Float64
         return NaN
     end
     return T * log(ratio)
+end
+
+function mu_ex_stderr(acc::ChemicalPotentialAccumulator, T::Float64)::Float64
+    if acc.t_total <= 0.0 || acc.count < 2
+        return NaN
+    end
+    # Compute variance of (R/N) using time-weighted statistics
+    μ_RN = acc.S / acc.t_total
+    var_RN = (acc.S_sq / acc.t_total) - (μ_RN * μ_RN)
+    var_RN = max(var_RN, 0.0)  # Ensure non-negative
+    
+    # Effective number of samples (same formula as TimeWeightedObservable)
+    n_eff = (acc.t_total * acc.t_total) / max(acc.t_total_sq, eps(Float64))
+    if n_eff <= 1.0
+        return NaN
+    end
+    
+    # Standard error of (R/N) average
+    stderr_RN = sqrt(var_RN / n_eff)
+    
+    # Error propagation: μ = T * log(S/t_total) = T * log(μ_RN)
+    # δμ = T * (δμ_RN) / μ_RN
+    if μ_RN <= 0.0
+        return NaN
+    end
+    return T * stderr_RN / μ_RN
 end
 
 function init_ekmc_state(st::LJState, p::LJParams)::eKMCState

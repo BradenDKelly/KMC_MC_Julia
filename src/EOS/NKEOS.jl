@@ -185,3 +185,16 @@ pressure(T::Float64, ρ::Float64)::Float64 = pressure_nkeos(T, ρ)
 Compatibility wrapper for EOS internal energy per particle in reduced units.
 """
 internal_energy(T::Float64, ρ::Float64)::Float64 = internal_energy_nkeos(T, ρ)
+
+"""
+    chemical_potential_nkeos(T, ρ)
+
+Residual chemical potential in reduced units.
+For a pure component: μ_res = a_res + P_res/ρ
+where a_res = A_res/N (residual Helmholtz free energy per particle).
+"""
+function chemical_potential_nkeos(T::Float64, ρ::Float64)::Float64
+    a_res = nkeos_alj_res(T, ρ)  # A_res/N (per particle)
+    P_res = pressure_nkeos(T, ρ)
+    return a_res + P_res / ρ
+end
