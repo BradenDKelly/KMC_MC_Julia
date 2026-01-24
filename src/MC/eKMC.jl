@@ -177,8 +177,8 @@ function ekmc_step!(st::eKMCState, p::LJParams, acc::ChemicalPotentialAccumulato
         error("eKMC: Total rate R must be positive and finite, got R = $R")
     end
     u = rand(st.rng)
-    u = max(eps(Float64), min(u, 1.0 - eps(Float64)))
-    dt = -log(u) / R
+    #u = max(eps(Float64), min(u, 1.0 - eps(Float64)))
+    dt = log(1/u) / R
     if dt <= 0.0 || !isfinite(dt)
         error("eKMC: dt must be positive and finite, got dt = $dt (u = $u, R = $R)")
     end
