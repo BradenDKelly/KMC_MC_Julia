@@ -211,6 +211,16 @@ function total_energy(st, p)::Float64
 end
 
 """
+    energy_bruteforce(st, p)::Float64
+
+Brute-force total energy (O(N^2)) for sanity checks.
+Currently identical to `total_energy`, kept as an explicit oracle.
+"""
+function energy_bruteforce(st, p)::Float64
+    return total_energy(st, p)
+end
+
+"""
     total_energy_scaled(st, p, scale_factor)::Float64
 
 Compute total energy after uniformly scaling all particle positions and box length
@@ -539,6 +549,16 @@ function pressure(st, p, T::Float64)::Float64
     end
     
     return P_sampled
+end
+
+"""
+    pressure_bruteforce(st, p, T::Float64)::Float64
+
+Brute-force pressure calculation (O(N^2)) for sanity checks.
+Uses the same corrections as `pressure`.
+"""
+function pressure_bruteforce(st, p, T::Float64)::Float64
+    return pressure(st, p, T)
 end
 
 """

@@ -295,34 +295,30 @@ function run_ekmc(p::LJParams, ekst::eKMCState, acc_mu::ChemicalPotentialAccumul
     # Keep acc_mu accumulating for continuous timeseries (no reset)
 
     total_time = 0.0
-    accumulated_dt = 0.0
     
     println("Running eKMC production...")
     for event_idx in 1:prod_events
         R_before = ekst.R  # Store R before move (same as used in ekmc_step!)
-        
+
         # According to Tan et al. (CEJ 2020) recipe:
         # - We're currently in a state with rate R_before
         # - ekmc_step! will compute dt = -ln(ξ)/R_before (residence time in current state)
         # - Then it will perform the move to a new state
         # - For time-weighted averages, we should weight observables by dt
         # - So we sample BEFORE the move, using the dt that will be computed in the step
-        
-        # Sample observables from current state BEFORE the move
-        # We'll use the dt from the step to weight this sample
-        if event_idx % sample_every == 0
-            # Sample current state (before move)
+
+        do_sample = event_idx % sample_every == 0
+        # Sample observables from current state BEFORE the move (sampling steps only).
+        # Weighting uses dt from this specific step (no accumulated dt).
+        if do_sample
             U = total_energy(ekst, p)
             P = pressure(ekst, p, T)
             exp_plus, exp_minus = virtual_volume_exp_factors(ekst, p, dlnV_virtual)
-            
-            # We'll accumulate dt after the step
-            # For now, just store the observables to be weighted by accumulated_dt + dt
         end
-        
+
         # Perform KMC step: computes dt for current state, then moves to new state
         dt = ekmc_step!(ekst, p, acc_mu)  # dt is residence time in state BEFORE move
-        
+
         # Also update production-only accumulator with same R value
         R_over_N = R_before / N
         acc_mu_prod.t_total += dt
@@ -331,42 +327,25 @@ function run_ekmc(p::LJParams, ekst::eKMCState, acc_mu::ChemicalPotentialAccumul
         acc_mu_prod.t_total_sq += dt * dt
         acc_mu_prod.count += 1
         total_time += dt
-        
-        # Accumulate dt for time-weighted averaging
-        accumulated_dt += dt
-        
-        # Now weight the observables we sampled before the move by accumulated_dt
-        if event_idx % sample_every == 0
-            if accumulated_dt > 0.0
-                push!(obs.U_per_particle, U / N, accumulated_dt)
-                push!(obs.pressure, P, accumulated_dt)
-                push!(obs.exp_vplus, exp_plus, accumulated_dt)
-                push!(obs.exp_vminus, exp_minus, accumulated_dt)
-                # Collect energy sample for distribution analysis
-                push!(obs.energy_samples, U / N)
-                
-                if collect_timeseries
-                    push!(timeseries.events_prod, Float64(event_idx))
-                    push!(timeseries.time_prod, total_time)
-                    push!(timeseries.U_prod, U / N)
-                    push!(timeseries.P_prod, P)
-                    # Running μ_ex estimate from accumulator
-                    mu_est = mu_ex(acc_mu, T)
-                    push!(timeseries.mu_prod, isfinite(mu_est) ? mu_est : NaN)
-                end
+
+        # Accumulate observables only on sampling steps, using dt from this step
+        if do_sample && dt > 0.0
+            push!(obs.U_per_particle, U / N, dt)
+            push!(obs.pressure, P, dt)
+            push!(obs.exp_vplus, exp_plus, dt)
+            push!(obs.exp_vminus, exp_minus, dt)
+            push!(obs.energy_samples, U / N)
+
+            if collect_timeseries
+                push!(timeseries.events_prod, Float64(event_idx))
+                push!(timeseries.time_prod, total_time)
+                push!(timeseries.U_prod, U / N)
+                push!(timeseries.P_prod, P)
+                # Running μ_ex estimate from accumulator
+                mu_est = mu_ex(acc_mu, T)
+                push!(timeseries.mu_prod, isfinite(mu_est) ? mu_est : NaN)
             end
-            accumulated_dt = 0.0  # Reset for next sampling interval
         end
-    end
-    
-    if accumulated_dt > 0.0
-        U = total_energy(ekst, p)
-        P = pressure(ekst, p, T)
-        push!(obs.U_per_particle, U / N, accumulated_dt)
-        push!(obs.pressure, P, accumulated_dt)
-        exp_plus, exp_minus = virtual_volume_exp_factors(ekst, p, dlnV_virtual)
-        push!(obs.exp_vplus, exp_plus, accumulated_dt)
-        push!(obs.exp_vminus, exp_minus, accumulated_dt)
     end
 
     obs.mu_ex = mu_ex(acc_mu_prod, T)  # Use production-only accumulator
@@ -494,6 +473,12 @@ function compare_nvt(; N::Int=500,
     else
         println("  ✓ Impulsive corrections are disabled (correct for cut-and-shifted LJ)")
     end
+    # Reporting-only impulsive correction value (not applied to energy or pressure unless enabled)
+    ρ_inst = N / (st_mc.L * st_mc.L * st_mc.L)
+    g_rc = compute_g_rc(st_mc, p_mc)
+    ΔP_imp = -(2.0 * π / 3.0) * ρ_inst * ρ_inst * p_mc.rc * p_mc.rc * p_mc.rc * p_mc.u_rc * g_rc
+    println("  g(rc) = ", g_rc)
+    println("  ΔP_imp = ", ΔP_imp)
     
     # Verify shift value is identical
     println()

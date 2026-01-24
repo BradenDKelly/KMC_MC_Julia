@@ -22,12 +22,24 @@ include(joinpath(@__DIR__, "..", "src", "MolSim.jl"))
 using .MolSim
 using .MolSim.MC
 using .MolSim.EOS
+using Statistics
+using Random
 
 # Force-reload MC validation code to avoid stale precompile artifacts
 Base.include(MolSim.MC, joinpath(@__DIR__, "..", "src", "MC", "eKMC.jl"))
 Base.include(MolSim.MC, joinpath(@__DIR__, "..", "src", "MC", "validation", "CompareNVT.jl"))
 
 # --- Simulation parameters (edit as needed) ---
+# RNG seeds
+const seed_mc = 51234
+const seed_ekmc = 24321
+# For multi-run stats, generate N seed pairs from one base seed.
+const seed_pairs_n = 10
+const seed_pairs_base = 123456
+const seed_pairs = begin
+    rng = MersenneTwister(seed_pairs_base)
+    [(rand(rng, 1:10^9), rand(rng, 1:10^9)) for _ in 1:seed_pairs_n]
+end
 # Cut-and-shifted LJ at r_cut = 2.5σ (matching TholAllen EOS)
 const N = 864
 const ρ = 0.75 #0.8645
@@ -37,16 +49,16 @@ const rc = 2.5  # Fixed cutoff matching TholAllen cut-and-shifted EOS
 const use_lrc = false  # No LRC for cut-and-shifted potential
 const lj_model = :shifted  # Cut-and-shifted LJ
 
-const burnin_sweeps_mc = 2000
+const burnin_sweeps_mc = 3000
 const prod_sweeps_mc = 2000
 # Match number of particle translations: 1 sweep ≈ N translations
-const burnin_events_ekmc = burnin_sweeps_mc * N 
-const prod_events_ekmc = prod_sweeps_mc * N
+const burnin_events_ekmc = burnin_sweeps_mc * N * 10
+const prod_events_ekmc = prod_sweeps_mc * N * 10
 const sample_every_mc = 10
 # Match number of samples between MC and eKMC
 const n_samples_mc = prod_sweeps_mc ÷ sample_every_mc
 # Sample eKMC 10x more frequently than MC for better time-weighted averaging
-const sample_every_ekmc = max(1, (prod_events_ekmc ÷ n_samples_mc))
+const sample_every_ekmc = max(1, (prod_events_ekmc ÷ n_samples_mc) ÷ 10)
 const dlnV_virtual = 1e-4
 const debug_check_every_ekmc = 1000
 const widom_every_mc = 100
@@ -75,52 +87,94 @@ if mc_sanity_check
     end
 end
 
-# --- Run comparison ---
-comparison_result = MC.compare_nvt(
-    N=N, ρ=ρ, T=T, rc=rc,
-    use_lrc=use_lrc,
-    lj_model=lj_model,
-    init_lattice=:fcc,
-    burnin_sweeps_mc=burnin_sweeps_mc,
-    prod_sweeps_mc=prod_sweeps_mc,
-    burnin_events_ekmc=burnin_events_ekmc,
-    prod_events_ekmc=prod_events_ekmc,
-    sample_every_mc=sample_every_mc,
-    sample_every_ekmc=sample_every_ekmc,
-    dlnV_virtual=dlnV_virtual,
-    debug_check_every_ekmc=debug_check_every_ekmc,
-    widom_every_mc=widom_every_mc,
-    widom_ninsert_mc=widom_ninsert_mc,
-    profile=true,
-    collect_timeseries=true
-)
+# --- Run comparison(s) ---
+all_results = MolSim.MC.NVTComparisonResult[]
+all_timeseries_mc = Any[]
+all_timeseries_ekmc = Any[]
+all_rdf_mc = Any[]
+all_rdf_ekmc = Any[]
 
-# Unpack results (compare_nvt returns tuple when collect_timeseries=true)
-if isa(comparison_result, Tuple)
-    if length(comparison_result) == 5
-        result, timeseries_mc, timeseries_ekmc, rdf_mc, rdf_ekmc = comparison_result
-    elseif length(comparison_result) == 3
-        result, timeseries_mc, timeseries_ekmc = comparison_result
+for (seed_mc_run, seed_ekmc_run) in seed_pairs
+    println()
+    println("=== Run seeds: MC=$(seed_mc_run), eKMC=$(seed_ekmc_run) ===")
+    comparison_result = MC.compare_nvt(
+        N=N, ρ=ρ, T=T, rc=rc,
+        use_lrc=use_lrc,
+        lj_model=lj_model,
+        init_lattice=:fcc,
+        seed_mc=seed_mc_run,
+        seed_ekmc=seed_ekmc_run,
+        burnin_sweeps_mc=burnin_sweeps_mc,
+        prod_sweeps_mc=prod_sweeps_mc,
+        burnin_events_ekmc=burnin_events_ekmc,
+        prod_events_ekmc=prod_events_ekmc,
+        sample_every_mc=sample_every_mc,
+        sample_every_ekmc=sample_every_ekmc,
+        dlnV_virtual=dlnV_virtual,
+        debug_check_every_ekmc=debug_check_every_ekmc,
+        widom_every_mc=widom_every_mc,
+        widom_ninsert_mc=widom_ninsert_mc,
+        profile=true,
+        collect_timeseries=true
+    )
+
+    # Unpack results (compare_nvt returns tuple when collect_timeseries=true)
+    if isa(comparison_result, Tuple)
+        if length(comparison_result) == 5
+            result, timeseries_mc, timeseries_ekmc, rdf_mc, rdf_ekmc = comparison_result
+        elseif length(comparison_result) == 3
+            result, timeseries_mc, timeseries_ekmc = comparison_result
+            rdf_mc = nothing
+            rdf_ekmc = nothing
+        else
+            result = comparison_result[1]
+            timeseries_mc = length(comparison_result) > 1 ? comparison_result[2] : nothing
+            timeseries_ekmc = length(comparison_result) > 2 ? comparison_result[3] : nothing
+            rdf_mc = length(comparison_result) > 3 ? comparison_result[4] : nothing
+            rdf_ekmc = length(comparison_result) > 4 ? comparison_result[5] : nothing
+        end
+    else
+        result = comparison_result
+        timeseries_mc = nothing
+        timeseries_ekmc = nothing
         rdf_mc = nothing
         rdf_ekmc = nothing
-    else
-        result = comparison_result[1]
-        timeseries_mc = length(comparison_result) > 1 ? comparison_result[2] : nothing
-        timeseries_ekmc = length(comparison_result) > 2 ? comparison_result[3] : nothing
-        rdf_mc = length(comparison_result) > 3 ? comparison_result[4] : nothing
-        rdf_ekmc = length(comparison_result) > 4 ? comparison_result[5] : nothing
     end
-else
-    result = comparison_result
-    timeseries_mc = nothing
-    timeseries_ekmc = nothing
-    rdf_mc = nothing
-    rdf_ekmc = nothing
+
+    push!(all_results, result)
+    push!(all_timeseries_mc, timeseries_mc)
+    push!(all_timeseries_ekmc, timeseries_ekmc)
+    push!(all_rdf_mc, rdf_mc)
+    push!(all_rdf_ekmc, rdf_ekmc)
 end
+
+result = all_results[end]
+timeseries_mc = all_timeseries_mc[end]
+timeseries_ekmc = all_timeseries_ekmc[end]
+rdf_mc = all_rdf_mc[end]
+rdf_ekmc = all_rdf_ekmc[end]
 
 println("Finished MC + eKMC validation run.")
 
 MC.print_comparison(result)
+
+if length(all_results) > 1
+    mc_u = [r.mc_U_per_particle for r in all_results]
+    ekmc_u = [r.ekmc_U_per_particle for r in all_results]
+    mc_p = [r.mc_P for r in all_results]
+    ekmc_p = [r.ekmc_P for r in all_results]
+    mc_mu = [r.mc_mu_ex for r in all_results]
+    ekmc_mu = [r.ekmc_mu_ex for r in all_results]
+
+    println()
+    println("Multi-run summary (mean ± std over $(length(all_results)) runs):")
+    println("  MC  U/N  = ", mean(mc_u), " ± ", std(mc_u))
+    println("  eKMC U/N = ", mean(ekmc_u), " ± ", std(ekmc_u))
+    println("  MC  P    = ", mean(mc_p), " ± ", std(mc_p))
+    println("  eKMC P   = ", mean(ekmc_p), " ± ", std(ekmc_p))
+    println("  MC  μ_ex = ", mean(mc_mu), " ± ", std(mc_mu))
+    println("  eKMC μ_ex = ", mean(ekmc_mu), " ± ", std(ekmc_mu))
+end
 
 println()
 println("NKEOS (Python reference port):")
