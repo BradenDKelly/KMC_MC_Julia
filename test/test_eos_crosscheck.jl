@@ -1,181 +1,36 @@
 using Test
 using MolSim
 
-# Load trusted Kolafa SklogWiki implementation
-include(joinpath(@__DIR__, "..", "src", "EOS", "LJKolafaSklogwiki1994.jl"))
-
-# Environment variable to enable Thol/Johnson cross-checks (default: disabled due to known issues)
-const ENABLE_THOL_JOHNSON = get(ENV, "MOLSIM_ENABLE_EOS_CROSSCHECK", "0") == "1"
-
-@testset "EOS cross-check tests" begin
-    # Helper function: compressibility factor Z(T,ρ) = P(T,ρ) / (ρ*T)
-    Z(T, ρ) = P -> P / (ρ * T)
-    
-    # Test 1: Ideal gas limit at very low density
+@testset "Nezbeda-Kolafa EOS regression" begin
+    # Ideal-gas limit at very low density
     T_ig = 1.0
     ρ_ig = 1e-6
-    
-    println("\n=== Ideal Gas Limit Test (ρ = $ρ_ig) ===")
-    
-    P_virial = MolSim.EOS.pressure(T_ig, ρ_ig)
-    P_kolafa = pressure_kolafa_sklogwiki(T_ig, ρ_ig)
-    
-    Z_virial = Z(T_ig, ρ_ig)(P_virial)
-    Z_kolafa = Z(T_ig, ρ_ig)(P_kolafa)
-    
-    println("Z_virial  = $Z_virial")
-    println("Z_kolafa  = $Z_kolafa")
-    
-    # All should approach 1.0 (ideal gas limit) at very low density
-    # Slightly relaxed tolerance due to finite density effects and numerical precision
-    @test abs(Z_virial - 1.0) < 1e-5
-    @test abs(Z_kolafa - 1.0) < 5e-5  # Slightly relaxed for Kolafa (exact coefficients may have slight numerical differences)
-    
-    # Thol and Johnson tests: only run if explicitly enabled (known issues)
-    if ENABLE_THOL_JOHNSON
-        P_johnson = MolSim.EOS.pressure_johnson(T_ig, ρ_ig)
-        P_thol = MolSim.EOS.pressure_thol(T_ig, ρ_ig)
-        
-        Z_johnson = Z(T_ig, ρ_ig)(P_johnson)
-        Z_thol = Z(T_ig, ρ_ig)(P_thol)
-        
-        println("Z_johnson = $Z_johnson")
-        println("Z_thol    = $Z_thol")
-        
-        @test abs(Z_johnson - 1.0) < 5e-3  # Johnson: relaxed tolerance, MBWR structure may need further adjustment
-        @test abs(Z_thol - 1.0) < 5e-5  # Slightly relaxed for Thol (exact coefficients may have slight numerical differences)
-    else
-        println("NOTE: Thol and Johnson ideal-gas tests skipped (set MOLSIM_ENABLE_EOS_CROSSCHECK=1 to enable)")
-    end
-    
-    # Test 2: Cross-check at multiple points
-    # NOTE: Current implementations use approximate coefficients.
-    # For exact agreement within 1e-3, need exact coefficients from teqp source.
-    # Focus on low-density points where models should agree better.
-    test_points = [
-        (T=1.0, ρ=0.01),   # Low density - should agree best
-        (T=0.9, ρ=0.05),   # Low-medium density  
-        (T=1.5, ρ=0.08),   # Medium-low density
+    P_ig = MolSim.EOS.pressure(T_ig, ρ_ig)
+    Z_ig = P_ig / (ρ_ig * T_ig)
+    @test abs(Z_ig - 1.0) < 1e-5
+
+    # Table 1 data from Kolafa & Nezbeda (1994): P and U with reported errors
+    table1 = [
+        (T=0.81, ρ=0.8645, P=1.0954,   P_err=0.0036, U=-6.10212, U_err=0.00053),
+        (T=1.2,  ρ=0.5,    P=0.02816,  P_err=0.007,  U=-3.4809,  U_err=0.006),
+        (T=1.2,  ρ=0.7,    P=0.6710,   P_err=0.006,  U=-4.7593,  U_err=0.0018),
+        (T=1.3,  ρ=0.2,    P=0.12113,  P_err=0.00087,U=-1.5685,  U_err=0.0038),
+        (T=1.3,  ρ=0.4,    P=0.1117,   P_err=0.0045, U=-2.8293,  U_err=0.008),
+        (T=1.3,  ρ=0.5,    P=0.15495,  P_err=0.004,  U=-3.4204,  U_err=0.0025),
+        (T=1.3,  ρ=0.6,    P=0.35725,  P_err=0.005,  U=-4.0555,  U_err=0.0026),
+        (T=1.4,  ρ=0.2,    P=0.15148,  P_err=0.00081,U=-1.4912,  U_err=0.003),
+        (T=1.4,  ρ=0.4,    P=0.19532,  P_err=0.0045, U=-2.7597,  U_err=0.0035),
+        (T=1.45, ρ=0.3,    P=0.1988,   P_err=0.0012, U=-2.1179,  U_err=0.0017),
+        (T=4.85, ρ=1.0,    P=31.474,   P_err=0.040,  U=-2.2925,  U_err=0.008),
+        (T=10.0, ρ=1.0,    P=54.032,   P_err=0.030,  U=1.4171,   U_err=0.0060),
+        (T=10.0, ρ=1.2,    P=99.178,   P_err=0.060,  U=5.4480,   U_err=0.010),
     ]
-    
-    println("\n=== Cross-Check Tests ===")
-    if ENABLE_THOL_JOHNSON
-        println("NOTE: These tests compare EOS implementations (Thol/Johnson enabled).")
-        println("All three EOS (Kolafa-Nezbeda 1994, Johnson 1993, Thol 2016) use exact coefficients from teqp.")
-        println("Density-dependent tolerances: ρ <= 0.01: 5e-3, 0.01 < ρ <= 0.3: 2e-2, ρ > 0.3: 5e-2")
-    else
-        println("NOTE: Testing Kolafa EOS only (Thol/Johnson disabled by default due to known issues).")
-        println("To enable Thol/Johnson cross-checks, set MOLSIM_ENABLE_EOS_CROSSCHECK=1")
-    end
-    println()
-    
-    # Density-dependent tolerances for exact coefficient implementations
-    # All three EOS (Kolafa, Johnson, Thol) now have exact coefficients
-    function get_tolerance(ρ_val::Float64)::Float64
-        if ρ_val <= 0.01
-            return 5e-3
-        elseif ρ_val <= 0.3
-            return 2e-2
-        else
-            return 5e-2
-        end
-    end
-    
-    all_passed = true
-    
-    for (point_idx, pt) in enumerate(test_points)
-        T_cross = pt.T
-        ρ_cross = pt.ρ
-        
-        println("Point $point_idx: T = $T_cross, ρ = $ρ_cross")
-        
-        P_kolafa_cross = pressure_kolafa_sklogwiki(T_cross, ρ_cross)
-        
-        # Check for NaN/Inf (always test Kolafa)
-        @test isfinite(P_kolafa_cross)
-        
-        Z_kolafa_cross = Z(T_cross, ρ_cross)(P_kolafa_cross)
-        
-        println("  Z_kolafa  = $Z_kolafa_cross")
-        
-        # Kolafa sanity check: Z should be reasonable (positive, not too large)
-        @test Z_kolafa_cross > 0.0
-        @test Z_kolafa_cross < 10.0  # Sanity check: Z shouldn't be unreasonably large
-        
-        if ENABLE_THOL_JOHNSON
-            P_johnson_cross = MolSim.EOS.pressure_johnson(T_cross, ρ_cross)
-            P_thol_cross = MolSim.EOS.pressure_thol(T_cross, ρ_cross)
-            
-            # Check for NaN/Inf
-            @test isfinite(P_johnson_cross)
-            @test isfinite(P_thol_cross)
-            
-            Z_johnson_cross = Z(T_cross, ρ_cross)(P_johnson_cross)
-            Z_thol_cross = Z(T_cross, ρ_cross)(P_thol_cross)
-            
-            println("  Z_johnson = $Z_johnson_cross")
-            println("  Z_thol    = $Z_thol_cross")
-            
-            # Compute pairwise differences
-            diff_kn_j = abs(Z_kolafa_cross - Z_johnson_cross)
-            diff_kn_t = abs(Z_kolafa_cross - Z_thol_cross)
-            diff_j_t = abs(Z_johnson_cross - Z_thol_cross)
-            
-            println("  Differences:")
-            println("    |Z_kolafa - Z_johnson| = $diff_kn_j")
-            println("    |Z_kolafa - Z_thol|    = $diff_kn_t")
-            println("    |Z_johnson - Z_thol|   = $diff_j_t")
-            
-            # Get tolerance based on density (same for Kolafa-Thol and Johnson)
-            current_tol = get_tolerance(ρ_cross)
-            
-            # A) Always assert Kolafa vs Thol
-            if diff_kn_t > current_tol
-                println("  ERROR: |Z_kolafa - Z_thol| = $diff_kn_t exceeds tolerance $current_tol")
-                all_passed = false
-            else
-                println("  ✓ Kolafa vs Thol: |ΔZ| = $diff_kn_t < tolerance $current_tol")
-            end
-            
-            # B) Assert Johnson agreement only in restricted domain: ρ <= 0.3 && T >= 1.0
-            johnson_in_domain = (ρ_cross <= 0.3) && (T_cross >= 1.0)
-            if johnson_in_domain
-                # Check max difference with Johnson
-                max_diff_johnson = maximum([diff_kn_j, diff_j_t])
-                if max_diff_johnson > current_tol
-                    println("  ERROR: Max |ΔZ| with Johnson = $max_diff_johnson exceeds tolerance $current_tol")
-                    all_passed = false
-                else
-                    println("  ✓ Johnson: max |ΔZ| = $max_diff_johnson < tolerance $current_tol")
-                end
-            else
-                println("  NOTE: Johnson assertion skipped (domain: ρ <= 0.3 && T >= 1.0 required)")
-            end
-        else
-            println("  NOTE: Thol/Johnson cross-checks skipped (set MOLSIM_ENABLE_EOS_CROSSCHECK=1 to enable)")
-        end
-    end
-    
-    println("\n=== Summary ===")
-    if ENABLE_THOL_JOHNSON
-        if all_passed
-            println("All cross-checks passed within density-dependent tolerances")
-            println("  - Kolafa vs Thol: always tested")
-            println("  - Johnson: tested only in domain ρ <= 0.3 && T >= 1.0")
-        else
-            println("WARNING: Some cross-checks exceeded density-dependent tolerances")
-            println("Tolerances: ρ <= 0.01: 5e-3, 0.01 < ρ <= 0.3: 2e-2, ρ > 0.3: 5e-2")
-            println("  - Kolafa vs Thol: always tested")
-            println("  - Johnson: tested only in domain ρ <= 0.3 && T >= 1.0")
-        end
-        # Test that all cross-checks pass (only when Thol/Johnson are enabled)
-        @test all_passed
-        println("\nAll cross-check tests passed!")
-    else
-        println("Kolafa EOS tests passed (sanity checks)")
-        println("Thol/Johnson cross-checks skipped (disabled by default)")
-        println("  To enable: set MOLSIM_ENABLE_EOS_CROSSCHECK=1")
-        # No @test all_passed needed when Thol/Johnson are disabled (only Kolafa sanity checks run)
-        println("\nKolafa EOS tests passed!")
+
+    # Allow a few-sigma envelope around reported errors
+    for pt in table1
+        P = MolSim.EOS.pressure(pt.T, pt.ρ)
+        U = MolSim.EOS.internal_energy(pt.T, pt.ρ)
+        @test abs(P - pt.P) <= 5.0 * pt.P_err
+        @test abs(U - pt.U) <= 5.0 * pt.U_err
     end
 end

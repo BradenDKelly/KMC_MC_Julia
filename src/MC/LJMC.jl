@@ -338,6 +338,7 @@ function local_energy(i::Int, st::LJState, p::LJParams)::Float64
     pos = st.pos
     types = st.types
     dr = st.scratch_dr
+    use_mixed = p.n_types > 1
     
     # Get particle i position and type
     pix = pos[1, i]
@@ -384,7 +385,7 @@ function local_energy(i::Int, st::LJState, p::LJParams)::Float64
                         if r2 < rc2 && r2 > 0.0
                             type_j = types[pj]
                             # Use mixed parameters for multicomponent
-                            if p.n_types > 1
+                            if use_mixed
                                 energy += lj_pair_u_from_r2_mixed(r2, type_i, type_j, p)
                             else
                                 # Single-component backward compatibility
@@ -559,10 +560,6 @@ function volume_trial!(st::LJState, p::LJParams; max_dlnV::Float64=0.01, Pext::F
     # Update box length
     st.L = L_new
     
-    # Update cell list for new box size (recreate with new L)
-    st.cl = CellList(N, L_new, st.cl.rc)
-    rebuild_cells!(st)
-    
     # Compute new total energy
     U_new = total_energy(st, p)
     
@@ -579,12 +576,13 @@ function volume_trial!(st::LJState, p::LJParams; max_dlnV::Float64=0.01, Pext::F
     accepted = false
     if log_acc >= 0.0 || rand(st.rng) < exp(log_acc)
         accepted = true
+        # Update cell list for new box size (recreate with new L)
+        st.cl = CellList(N, L_new, st.cl.rc)
+        rebuild_cells!(st)
     else
         # Reject: restore old positions and L
         copyto!(pos, pos_old)
         st.L = L_old
-        st.cl = CellList(N, L_old, st.cl.rc)
-        rebuild_cells!(st)
     end
     
     return accepted
