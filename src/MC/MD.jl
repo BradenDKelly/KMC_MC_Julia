@@ -1,7 +1,14 @@
 """
 Simple Molecular Dynamics (MD) with thermostat and barostat for Lennard-Jones systems.
-Uses Velocity Verlet integrator, velocity rescaling thermostat, and Berendsen barostat.
+Uses Velocity Verlet integrator, velocity rescaling thermostat, and MC-style volume moves for NPT.
 All in reduced units (ε=σ=k_B=1, m=1).
+
+INDEPENDENCE NOTE: MD serves as an external verifier for MC and KMC simulations.
+All energy, pressure, and force calculations are implemented independently from MC/KMC,
+even though they use the same physics. This ensures that bugs in MC/KMC implementations
+won't propagate to MD verification. The volume move algorithm (MC-style) can be shared
+since it's just the move proposal mechanism, but all thermodynamic property calculations
+are separate implementations.
 """
 
 using Random
@@ -72,6 +79,10 @@ Force = -∇u(r) = -du/dr * (dr/r)
 For LJ: u(r) = 4ε[(σ/r)^12 - (σ/r)^6] - u_rc (if shifted)
 du/dr = 4ε * [12*(σ/r)^12/r - 6*(σ/r)^6/r] = 4ε/r * [12*(σ/r)^12 - 6*(σ/r)^6]
 Returns zero force if r2 >= rc2 or if r < overlap cap.
+
+INDEPENDENT IMPLEMENTATION: This is a separate implementation from MC/KMC force
+calculations. It uses the same physics but is implemented independently to serve
+as an external verifier.
 """
 @inline function lj_force(r2::Float64, dr::SVector{3,Float64}, p::LJParams)::SVector{3,Float64}
     if r2 >= p.rc2 || r2 <= 0.0
@@ -90,12 +101,12 @@ Returns zero force if r2 >= rc2 or if r < overlap cap.
     σ6_over_r6 = σ_over_r^6
     σ12_over_r12 = σ6_over_r6 * σ6_over_r6
     
-    # du/dr = 4ε/r * [12*(σ/r)^12 - 6*(σ/r)^6]
-    dudr = 4.0 * p.ϵ * invr * (12.0 * σ12_over_r12 - 6.0 * σ6_over_r6)
-    
-    # Force = -du/dr * (dr/r) = -dudr * dr * invr
-    f = -dudr * invr
-    return SVector(f * dr[1], f * dr[2], f * dr[3])
+    # For LJ: U(r) = 4ε[(σ/r)^12 - (σ/r)^6]
+    # dU/dr = 4ε * [-12σ^12/r^13 + 6σ^6/r^7] = 4ε/r * [-12(σ/r)^12 + 6(σ/r)^6]
+    # Force F = -dU/dr * (dr/r) = 4ε/r * [12(σ/r)^12 - 6(σ/r)^6] * (dr/r)
+    # So F = 4ε/r^2 * [12(σ/r)^12 - 6(σ/r)^6] * dr
+    coeff = 4.0 * p.ϵ * invr * invr * (12.0 * σ12_over_r12 - 6.0 * σ6_over_r6)
+    return SVector(coeff * dr[1], coeff * dr[2], coeff * dr[3])
 end
 
 """
@@ -189,6 +200,10 @@ end
     virial(st, p)::Float64
 
 Compute virial for pressure calculation: W = sum_i r_i · F_i
+    
+INDEPENDENT IMPLEMENTATION: This is a separate implementation from MC/KMC virial
+calculations. It uses the same physics but is implemented independently to serve
+as an external verifier.
 """
 function virial(st::MDState, p::LJParams)::Float64
     N = st.N
@@ -243,7 +258,12 @@ end
 """
     _md_total_energy(st, p)::Float64
 
-Compute total potential energy for MDState (compatible with total_energy interface).
+Compute total potential energy for MDState.
+    
+INDEPENDENT IMPLEMENTATION: This is a separate implementation from MC/KMC energy
+calculations. It uses the same physics (LJ potential, cut-and-shift, overlap cap)
+but is implemented independently to serve as an external verifier. This ensures
+that bugs in MC/KMC energy calculations won't propagate to MD verification.
 """
 function _md_total_energy(st::MDState, p::LJParams)::Float64
     energy = 0.0
@@ -307,6 +327,11 @@ end
 
 Compute pressure from virial equation: P = ρ*T + (1/(3*V)) * W
 where W is the virial.
+    
+INDEPENDENT IMPLEMENTATION: This is a separate implementation from MC/KMC pressure
+calculations. It uses the same physics (virial equation) but is implemented
+independently to serve as an external verifier. This ensures that bugs in MC/KMC
+pressure calculations won't propagate to MD verification.
 """
 function pressure(st::MDState, p::LJParams, T::Float64)::Float64
     N = st.N
@@ -371,28 +396,82 @@ function velocity_rescale!(st::MDState, T_target::Float64)
 end
 
 """
-    berendsen_barostat!(st, p, T, P_target, dt, tau_p)
+    volume_trial_md!(st, p, T, Pext, max_dlnV, rng)::Bool
 
-Apply Berendsen barostat to scale volume and positions.
-Volume scaling: dV/dt = -κ * (P - P_target) / τ_p
-where κ is the isothermal compressibility (approximated as 1/(ρ*T) for ideal gas).
+Perform one Monte Carlo volume trial move for MD NPT.
+Returns true if accepted, false if rejected.
+On reject, restores old positions, velocities, and L.
 """
-function berendsen_barostat!(st::MDState, p::LJParams, T::Float64, P_target::Float64, dt::Float64, tau_p::Float64)
-    P_inst = pressure(st, p, T)
-    μ = 1.0 - (dt / tau_p) * (P_inst - P_target) / (p.σ^3 * T)  # Compressibility approximation
-    μ = max(0.95, min(1.05, μ))  # Limit scaling to ±5% per step
+function volume_trial_md!(st::MDState, p::LJParams, T::Float64, Pext::Float64, max_dlnV::Float64, rng::Xoshiro)::Bool
+    N = st.N
+    L_old = st.L
+    V_old = L_old * L_old * L_old
+    lnV_old = log(V_old)
     
-    # Scale box length and positions
-    L_new = st.L * μ
-    scale = μ
+    # Store old state
+    pos_old = copy(st.pos)
+    vel_old = copy(st.vel)
     
-    @inbounds for i in 1:st.N
+    # Compute old total energy (potential only, MD uses separate kinetic energy)
+    U_old = _md_total_energy(st, p)
+    
+    # Propose new volume: lnV' = lnV + (rand() - 0.5) * 2 * max_dlnV
+    dlnV = (rand(rng) - 0.5) * 2.0 * max_dlnV
+    lnV_new = lnV_old + dlnV
+    V_new = exp(lnV_new)
+    L_new = cbrt(V_new)
+    scale = L_new / L_old
+    
+    # Scale all positions and velocities by L_new/L_old
+    @inbounds for i in 1:N
         for d in 1:3
             st.pos[d, i] *= scale
+            st.vel[d, i] *= scale  # Scale velocities to preserve momentum
         end
     end
     
+    # Wrap all positions to [0, L_new)
+    L_half = 0.5 * L_new
+    @inbounds for i in 1:N
+        for d in 1:3
+            if st.pos[d, i] >= L_new
+                st.pos[d, i] -= L_new
+            elseif st.pos[d, i] < 0.0
+                st.pos[d, i] += L_new
+            end
+        end
+    end
+    
+    # Update box length
     st.L = L_new
+    
+    # Recompute forces for new configuration
+    compute_forces!(st, p)
+    
+    # Compute new total energy
+    U_new = _md_total_energy(st, p)
+    
+    # Metropolis acceptance criterion for NPT:
+    # acc = exp[-β(ΔU + Pext*(V' - V)) + N*ln(V'/V)]
+    # Note: For MD, we only consider potential energy change (kinetic energy scales with velocities)
+    ΔU = U_new - U_old
+    ΔV = V_new - V_old
+    β = p.β
+    log_acc = -β * (ΔU + Pext * ΔV) + N * (lnV_new - lnV_old)
+    
+    accepted = false
+    if log_acc >= 0.0 || rand(rng) < exp(log_acc)
+        accepted = true
+        # Already updated positions, velocities, L, and forces
+    else
+        # Reject: restore old state
+        copyto!(st.pos, pos_old)
+        copyto!(st.vel, vel_old)
+        st.L = L_old
+        compute_forces!(st, p)  # Recompute forces for old configuration
+    end
+    
+    return accepted
 end
 
 """
@@ -452,13 +531,13 @@ function run_md_nvt!(st::MDState, p::LJParams; nsteps::Int=10000, dt::Float64=0.
 end
 
 """
-    run_md_npt!(st, p; nsteps, dt, T, P, thermostat_every, barostat_every, tau_p)
+    run_md_npt!(st, p; nsteps, dt, T, P, thermostat_every, vol_move_every, max_dlnV)
 
-Run NPT MD simulation with velocity rescaling thermostat and Berendsen barostat.
+Run NPT MD simulation with velocity rescaling thermostat and MC volume moves.
 """
 function run_md_npt!(st::MDState, p::LJParams; nsteps::Int=10000, dt::Float64=0.001,
                      T::Float64=1.0, P::Float64=1.0, thermostat_every::Int=10,
-                     barostat_every::Int=10, tau_p::Float64=1.0)
+                     vol_move_every::Int=10, max_dlnV::Float64=0.01)
     # Initialize forces
     compute_forces!(st, p)
     
@@ -483,11 +562,10 @@ function run_md_npt!(st::MDState, p::LJParams; nsteps::Int=10000, dt::Float64=0.
             velocity_rescale!(st, T)
         end
         
-        # Barostat every M steps
-        if step % barostat_every == 0
-            berendsen_barostat!(st, p, T, P, dt, tau_p)
-            # Recompute forces after volume change
-            compute_forces!(st, p)
+        # MC volume move every M steps
+        if step % vol_move_every == 0
+            volume_trial_md!(st, p, T, P, max_dlnV, st.rng)
+            # Forces are recomputed inside volume_trial_md! if accepted
         end
         
         # Sample observables
@@ -507,6 +585,10 @@ function run_md_npt!(st::MDState, p::LJParams; nsteps::Int=10000, dt::Float64=0.
     end
     
     # Compute averages
+    if count == 0
+        return (0.0, 0.0, NaN, NaN, NaN, NaN)
+    end
+    
     U_avg = U_sum / count
     U_var = (U_sq_sum / count) - (U_avg * U_avg)
     U_std = sqrt(max(0.0, U_var))

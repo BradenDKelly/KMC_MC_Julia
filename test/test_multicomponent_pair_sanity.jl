@@ -42,7 +42,11 @@ using MolSim.MC: LJParams, lj_pair_u_from_r2_mixed, lj_force_magnitude_times_r_m
     @test p.ϵ_mix[2, 1] ≈ ϵ12_expected atol=1e-10  # Symmetry
     
     # Test pair energies at specific r values
-    r_values = [0.95 * σ1, 1.2 * σ1, 2.0 * σ1]  # In absolute units
+    # Use r values that avoid overlap cap for all pair types
+    # Overlap cap triggers when r < 0.75 * σ_ab
+    # For (2,2) pair: σ_ab = 1.5, so cap at r < 1.125
+    # Use r values safely above the cap for the largest σ
+    r_values = [1.3 * σ1, 1.5 * σ1, 2.0 * σ1]  # In absolute units (1.3, 1.5, 2.0)
     
     for r in r_values
         r2 = r * r

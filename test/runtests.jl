@@ -208,7 +208,6 @@ include("test_detailed_balance.jl")
 include("test_pressure_identities.jl")
 include("test_rdf.jl")
 include("test_rdf_mixture.jl")
-include("test_fluctuations.jl")
 
 # Include regression configuration locks
 include("test_regression_configs.jl")
@@ -230,6 +229,9 @@ include("test_eos_crosscheck.jl")
 
 # Include multicomponent LJ tests
 include("test_multicomponent_reduction.jl")
+
+# Include MD barostat tests
+include("test_md_barostat.jl")
 include("test_multicomponent_relabel.jl")
 include("test_multicomponent_pair_sanity.jl")
 include("test_multicomponent_widom.jl")
@@ -240,6 +242,7 @@ include("test_ekmc_energy_consistency.jl")
 # Conditional include for slow tests (long-run ensemble convergence)
 if RUN_SLOW_TESTS
     include("test_pressure_identities_slow.jl")
+    include("test_fluctuations_slow.jl")
 else
     @info "Slow tests skipped. To enable, set environment variable: MOLSIM_SLOW_TESTS=1" *
           "\n  Windows PowerShell: `\$env:MOLSIM_SLOW_TESTS=\"1\"; julia --project -e \"using Pkg; Pkg.test()\"`" *
