@@ -232,6 +232,13 @@ include("test_multicomponent_reduction.jl")
 
 # Include MD barostat tests
 include("test_md_barostat.jl")
+
+# Include comprehensive MD tests
+include("test_md_comprehensive.jl")
+
+# Include comprehensive NPT eKMC tests
+include("test_ekmc_npt_comprehensive.jl")
+
 include("test_multicomponent_relabel.jl")
 include("test_multicomponent_pair_sanity.jl")
 include("test_multicomponent_widom.jl")

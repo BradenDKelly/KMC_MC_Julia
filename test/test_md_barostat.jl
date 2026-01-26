@@ -1,12 +1,13 @@
 """
-Tests for MD barostat and NPT MD simulations.
+Tests for MD NPT volume moves and NPT MD simulations.
+MD now uses MC-style volume change moves instead of Berendsen barostat.
 """
 
 using Test
 using MolSim
 using Random
 
-@testset "MD barostat basic functionality" begin
+@testset "MD volume move basic functionality" begin
     # Initialize a small system
     N = 32
     ρ = 0.8
@@ -31,15 +32,18 @@ using Random
     V_initial = L_initial^3
     ρ_initial = N / V_initial
     
-    # Test barostat with target pressure
+    # Test volume move with target pressure
     P_target = 1.0
-    dt = 0.001
-    tau_p = 1.0
+    max_dlnV = 0.01
     
-    # Apply barostat a few times
+    # Apply volume moves a few times
+    accepted_count = 0
     for i in 1:10
-        MC.berendsen_barostat!(st_md, p, T, P_target, dt, tau_p)
-        MC.compute_forces!(st_md, p)
+        L_before = st_md.L
+        accepted = MC.volume_trial_md!(st_md, p, T, P_target, max_dlnV, st_md.rng)
+        if accepted
+            accepted_count += 1
+        end
         
         # Check that box size is valid
         @test st_md.L > 0.0
@@ -53,8 +57,10 @@ using Random
         end
     end
     
-    # Box size should have changed (unless pressure was exactly right)
-    # But it should still be reasonable
+    # Should have some accepted moves
+    @test accepted_count > 0
+    
+    # Box size should be reasonable
     @test st_md.L > 0.5 * L_initial
     @test st_md.L < 2.0 * L_initial
 end
@@ -85,8 +91,8 @@ end
     dt = 0.001
     nsteps = 1000
     thermostat_every = 10
-    barostat_every = 10
-    tau_p = 1.0
+    vol_move_every = 20
+    max_dlnV = 0.01
     
     # Initialize forces
     MC.compute_forces!(st_md, p)
@@ -107,20 +113,30 @@ end
             MC.velocity_rescale!(st_md, T)
         end
         
-        if step % barostat_every == 0
+        if step % vol_move_every == 0
             L_before = st_md.L
-            MC.berendsen_barostat!(st_md, p, T, P_target, dt, tau_p)
-            MC.compute_forces!(st_md, p)
+            accepted = MC.volume_trial_md!(st_md, p, T, P_target, max_dlnV, st_md.rng)
+            # Forces are recomputed inside volume_trial_md! if accepted
+            if !accepted
+                MC.compute_forces!(st_md, p)  # Recompute if rejected
+            end
             L_after = st_md.L
             
-            # Check that box size change is reasonable (barostat should limit to ±5%)
-            if L_before > 0.0
+            # Check that box size change is reasonable (MC moves are limited by max_dlnV)
+            if L_before > 0.0 && accepted
                 scale = L_after / L_before
-                @test 0.95 <= scale <= 1.05  # Barostat should limit to ±5% per step
+                # max_dlnV = 0.01 means max scale = exp(0.01) ≈ 1.01
+                @test scale > 0.99  # Shouldn't shrink too much
+                @test scale < 1.01  # Shouldn't grow too much
             end
         end
         
         if step % thermostat_every == 0
+            # Ensure forces are current
+            if step % vol_move_every != 0
+                MC.compute_forces!(st_md, p)
+            end
+            
             P_inst = MC.pressure(st_md, p, T)
             ρ_inst = N / (st_md.L^3)
             if isfinite(P_inst) && isfinite(ρ_inst) && st_md.L > 0.0 && ρ_inst > 0.0
@@ -165,7 +181,7 @@ end
         @test L_avg > 0.5 * L_initial  # Shouldn't collapse to < 50% of initial
         @test L_avg < 2.0 * L_initial  # Shouldn't explode to > 2x initial
         
-        # Box size variation should be reasonable (barostat should control it)
+        # Box size variation should be reasonable
         @test L_std < 0.5 * L_initial  # Standard deviation shouldn't be huge
         
         # Density should be reasonable (not near zero or extremely high)
@@ -177,8 +193,8 @@ end
     end
 end
 
-@testset "MD barostat compressibility formula" begin
-    # Test that barostat uses correct compressibility formula
+@testset "MD volume move acceptance" begin
+    # Test that volume moves can be accepted/rejected based on Metropolis criterion
     N = 32
     ρ = 0.8
     T = 1.0
@@ -196,45 +212,55 @@ end
     MC.compute_forces!(st_md, p)
     
     L_before = st_md.L
-    P_inst = MC.pressure(st_md, p, T)
-    P_target = P_inst + 0.1  # Slightly higher target pressure
+    P_target = 1.0
+    max_dlnV = 0.01
     
-    # Apply barostat once
-    MC.berendsen_barostat!(st_md, p, T, P_target, 0.001, 1.0)
+    # Perform volume move
+    accepted = MC.volume_trial_md!(st_md, p, T, P_target, max_dlnV, st_md.rng)
     
-    # Box should shrink slightly (P_inst < P_target, so volume should decrease)
-    # But change should be small and controlled
-    @test st_md.L < L_before  # Should shrink when P_target > P_inst
-    @test st_md.L > 0.95 * L_before  # But shouldn't shrink too much in one step
-    @test isfinite(st_md.L)
-end
-
-@testset "MD barostat guards against invalid states" begin
-    N = 32
-    ρ = 0.8
-    T = 1.0
-    rc = 2.5
+    # Should return a boolean
+    @test accepted isa Bool
     
-    _, st_mc = MC.init_simple(N=N, ρ=ρ, T=T, rc=rc, max_disp=0.1, seed=99999,
-                               use_lrc=false, lj_model=:shifted, apply_impulsive_correction=false)
-    p = MC.LJParams(; σ_types=[1.0], ϵ_types=[1.0], rc=rc, T=T, max_disp=0.1,
-                    use_lrc=false, lj_model=:shifted, apply_impulsive_correction=false)
-    
-    st_md = MC.init_md_state(st_mc.pos, T, Random.Xoshiro(99999))
-    st_md.L = st_mc.L
-    st_md.types = st_mc.types
-    
-    MC.compute_forces!(st_md, p)
-    
-    L_before = st_md.L
-    
-    # Test with invalid temperature (should return early)
-    MC.berendsen_barostat!(st_md, p, 0.0, 1.0, 0.001, 1.0)
-    @test st_md.L == L_before  # Should not have changed
-    
-    # Test with NaN pressure (by corrupting state)
-    # This is harder to test directly, but the guards should prevent issues
-    MC.berendsen_barostat!(st_md, p, T, 1.0, 0.001, 1.0)
+    # Box size should be valid regardless of acceptance
     @test st_md.L > 0.0
     @test isfinite(st_md.L)
+    
+    # If accepted, box size should have changed (within max_dlnV limits)
+    if accepted
+        scale = st_md.L / L_before
+        @test scale >= exp(-max_dlnV)
+        @test scale <= exp(max_dlnV)
+    end
+end
+
+@testset "MD volume move preserves energy consistency" begin
+    # Test that energy computed from MD state matches after volume move
+    N = 32
+    ρ = 0.8
+    T = 1.0
+    rc = 2.5
+    
+    _, st_mc = MC.init_simple(N=N, ρ=ρ, T=T, rc=rc, max_disp=0.1, seed=88888,
+                               use_lrc=false, lj_model=:shifted, apply_impulsive_correction=false)
+    p = MC.LJParams(; σ_types=[1.0], ϵ_types=[1.0], rc=rc, T=T, max_disp=0.1,
+                    use_lrc=false, lj_model=:shifted, apply_impulsive_correction=false)
+    
+    st_md = MC.init_md_state(st_mc.pos, T, Random.Xoshiro(88888))
+    st_md.L = st_mc.L
+    st_md.types = st_mc.types
+    
+    MC.compute_forces!(st_md, p)
+    
+    # Perform volume move
+    P_target = 1.0
+    max_dlnV = 0.01
+    MC.volume_trial_md!(st_md, p, T, P_target, max_dlnV, st_md.rng)
+    
+    # Energy should be finite
+    U = MC._md_total_energy(st_md, p)
+    @test isfinite(U)
+    
+    # Pressure should be finite
+    P = MC.pressure(st_md, p, T)
+    @test isfinite(P)
 end
