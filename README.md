@@ -7,7 +7,7 @@ A comprehensive molecular simulation package for Lennard-Jones systems supportin
 MolSim provides implementations of three complementary simulation methods for studying Lennard-Jones fluids:
 
 - **Metropolis Monte Carlo (MC)**: Traditional rejection-based MC with importance sampling
-- **Equilibrium Kinetic Monte Carlo (eKMC)**: Rejection-free MC using time-weighted averages (Tan et al. method)
+- **Equilibrium Kinetic Monte Carlo (eKMC)**: Rejection-free MC using time-weighted averages
 - **Molecular Dynamics (MD)**: Velocity Verlet integrator with thermostat and barostat (independent verifier)
 
 All three methods support **NVT** (canonical) and **NPT** (isothermal-isobaric) ensembles, with thermodynamic consistency validation between methods.
