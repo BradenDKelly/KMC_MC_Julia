@@ -57,6 +57,97 @@ function reset!(acc::ChemicalPotentialAccumulator)
     return nothing
 end
 
+# NPT-specific chemical potential accumulator (Equation A.132)
+# μ₁^(res) = kT ln [⟨(exp(βφ_N)) / V⟩ ⟨V⟩]
+# where exp(βφ_N) ≈ R/N (average mobility)
+mutable struct NPTChemicalPotentialAccumulator
+    t_total::Float64
+    S_over_V::Float64             # sum ((R/N) / V) * dt = ⟨(exp(βφ_N)) / V⟩
+    S_over_V_sq::Float64          # sum (((R/N) / V)^2) * dt for variance
+    V_avg::Float64                # sum V * dt = ⟨V⟩
+    V_avg_sq::Float64             # sum (V^2) * dt for variance
+    t_total_sq::Float64           # sum (dt^2) for effective sample size
+    count::Int
+end
+
+NPTChemicalPotentialAccumulator() = NPTChemicalPotentialAccumulator(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
+
+function reset!(acc::NPTChemicalPotentialAccumulator)
+    acc.t_total = 0.0
+    acc.S_over_V = 0.0
+    acc.S_over_V_sq = 0.0
+    acc.V_avg = 0.0
+    acc.V_avg_sq = 0.0
+    acc.t_total_sq = 0.0
+    acc.count = 0
+    return nothing
+end
+
+function Base.push!(acc::NPTChemicalPotentialAccumulator, R_over_N::Float64, V::Float64, dt::Float64)
+    R_over_V = R_over_N / V
+    acc.t_total += dt
+    acc.S_over_V += R_over_V * dt
+    acc.S_over_V_sq += (R_over_V * R_over_V) * dt
+    acc.V_avg += V * dt
+    acc.V_avg_sq += (V * V) * dt
+    acc.t_total_sq += dt * dt
+    acc.count += 1
+    return acc
+end
+
+function mu_ex_npt(acc::NPTChemicalPotentialAccumulator, T::Float64)::Float64
+    if acc.t_total <= 0.0
+        return NaN
+    end
+    # Equation A.132: μ₁^(res) = kT ln [⟨(exp(βφ_N)) / V⟩ ⟨V⟩]
+    # where exp(βφ_N) ≈ R/N
+    avg_S_over_V = acc.S_over_V / acc.t_total  # ⟨(R/N) / V⟩
+    avg_V = acc.V_avg / acc.t_total             # ⟨V⟩
+    
+    if avg_S_over_V <= 0.0 || avg_V <= 0.0
+        return NaN
+    end
+    return T * log(avg_S_over_V * avg_V)
+end
+
+function mu_ex_npt_stderr(acc::NPTChemicalPotentialAccumulator, T::Float64)::Float64
+    if acc.t_total <= 0.0 || acc.count < 2
+        return NaN
+    end
+    
+    # Compute averages
+    avg_S_over_V = acc.S_over_V / acc.t_total
+    avg_V = acc.V_avg / acc.t_total
+    
+    if avg_S_over_V <= 0.0 || avg_V <= 0.0
+        return NaN
+    end
+    
+    # Compute variances
+    var_S_over_V = (acc.S_over_V_sq / acc.t_total) - (avg_S_over_V * avg_S_over_V)
+    var_V = (acc.V_avg_sq / acc.t_total) - (avg_V * avg_V)
+    var_S_over_V = max(var_S_over_V, 0.0)
+    var_V = max(var_V, 0.0)
+    
+    # Effective number of samples
+    n_eff = (acc.t_total * acc.t_total) / max(acc.t_total_sq, eps(Float64))
+    if n_eff <= 1.0
+        return NaN
+    end
+    
+    # Standard errors
+    stderr_S_over_V = sqrt(var_S_over_V / n_eff)
+    stderr_V = sqrt(var_V / n_eff)
+    
+    # Error propagation: μ = T * ln(avg_S_over_V * avg_V)
+    # δμ = T * sqrt((δ(avg_S_over_V) / avg_S_over_V)^2 + (δ(avg_V) / avg_V)^2)
+    rel_err_S_over_V = stderr_S_over_V / avg_S_over_V
+    rel_err_V = stderr_V / avg_V
+    rel_err_total = sqrt(rel_err_S_over_V * rel_err_S_over_V + rel_err_V * rel_err_V)
+    
+    return T * rel_err_total
+end
+
 @inline function _minimum_image!(dr::MVector{3,Float64}, L::Float64)
     L_half = L / 2.0
     for k in 1:3
@@ -91,6 +182,82 @@ function compute_all_m_R!(st::eKMCState, p::LJParams)
         st.R += m_i
     end
     return nothing
+end
+
+"""
+    total_energy_from_pair_u(st::eKMCState, p::LJParams)::Float64
+
+Compute total energy from stored pair_u matrix (O(N^2) sum, but much faster than recomputing distances).
+Each pair is stored twice in the symmetric matrix, so we divide by 2.
+"""
+function total_energy_from_pair_u(st::eKMCState, p::LJParams)::Float64
+    energy = 0.5 * sum(st.pair_u)
+    if p.use_lrc
+        energy += st.N * p.lrc_u_per_particle
+    end
+    return energy
+end
+
+"""
+    total_virial_from_positions(st::eKMCState, p::LJParams)::Float64
+
+Compute virial from positions, but only for pairs with non-zero energy in pair_u.
+This is more efficient than full O(N^2) calculation when many pairs are beyond cutoff.
+"""
+function total_virial_from_positions(st::eKMCState, p::LJParams)::Float64
+    virial = 0.0
+    N = st.N
+    L = st.L
+    L_half = 0.5 * L
+    rc2 = p.rc2
+    pos = st.pos
+    dr = st.scratch_dr
+    
+    @inbounds for i in 1:N
+        for j in (i+1):N
+            # Only compute virial for pairs that have non-zero energy (within cutoff)
+            if st.pair_u[i, j] == 0.0
+                continue
+            end
+            
+            # Compute distance vector
+            dr[1] = pos[1, j] - pos[1, i]
+            dr[2] = pos[2, j] - pos[2, i]
+            dr[3] = pos[3, j] - pos[3, i]
+            _minimum_image!(dr, L)
+            r2 = dr[1]*dr[1] + dr[2]*dr[2] + dr[3]*dr[3]
+            
+            if r2 < rc2 && r2 > 0.0
+                virial += lj_force_magnitude_times_r(r2, p)
+            end
+        end
+    end
+    
+    return virial
+end
+
+"""
+    pressure_from_pair_u(st::eKMCState, p::LJParams, T::Float64)::Float64
+
+Compute pressure using stored pair_u matrix for energy and efficient virial calculation.
+"""
+function pressure_from_pair_u(st::eKMCState, p::LJParams, T::Float64)::Float64
+    N = st.N
+    L = st.L
+    V = L * L * L
+    ρ = N / V
+    W = total_virial_from_positions(st, p)
+    P_sampled = ρ * T + W / (3.0 * V)
+    
+    # Add long-range correction if enabled
+    if p.use_lrc
+        P_sampled += p.lrc_p
+    end
+    
+    # Note: Impulsive correction is not included here for eKMC (typically not used)
+    # If needed, it can be added similar to the regular pressure function
+    
+    return P_sampled
 end
 
 function update_phi_after_move!(i::Int, oldx::Float64, oldy::Float64, oldz::Float64,
@@ -177,7 +344,7 @@ function ekmc_step!(st::eKMCState, p::LJParams, acc::ChemicalPotentialAccumulato
         error("eKMC: Total rate R must be positive and finite, got R = $R")
     end
     u = rand(st.rng)
-    #u = max(eps(Float64), min(u, 1.0 - eps(Float64)))
+    u = max(eps(Float64), min(u, 1.0 - eps(Float64)))
     dt = log(1/u) / R
     if dt <= 0.0 || !isfinite(dt)
         error("eKMC: dt must be positive and finite, got dt = $dt (u = $u, R = $R)")
@@ -320,4 +487,344 @@ function run_ekmc!(st::eKMCState, p::LJParams, acc::ChemicalPotentialAccumulator
         total_time += dt
     end
     return total_time
+end
+
+# ============================================================================
+# NPT Ensemble (Tan et al. method)
+# ============================================================================
+
+"""
+    rebuild_pair_phi_R_after_volume!(st::eKMCState, p::LJParams)
+
+Rebuild pair energies, phi, mobilities, and total rate after a volume change.
+All positions have been scaled and wrapped, but pair_u matrix is stale.
+"""
+function rebuild_pair_phi_R_after_volume!(st::eKMCState, p::LJParams)
+    N = st.N
+    L = st.L
+    rc2 = p.rc2
+    pos = st.pos
+    dr = st.scratch_dr
+    β = p.β
+
+    # Reset pair energies and phi
+    fill!(st.pair_u, 0.0)
+    fill!(st.phi, 0.0)
+
+    # Recompute all pair energies
+    @inbounds for i in 1:N
+        for j in (i+1):N
+            dr[1] = pos[1, j] - pos[1, i]
+            dr[2] = pos[2, j] - pos[2, i]
+            dr[3] = pos[3, j] - pos[3, i]
+            _minimum_image!(dr, L)
+            r2 = dr[1]*dr[1] + dr[2]*dr[2] + dr[3]*dr[3]
+            u = (r2 < rc2 && r2 > 0.0) ? lj_pair_u_from_r2(r2, p) : 0.0
+            st.pair_u[i, j] = u
+            st.pair_u[j, i] = u
+            st.phi[i] += u
+            st.phi[j] += u
+        end
+    end
+
+    # Recompute mobilities and total rate
+    st.R = 0.0
+    @inbounds for i in 1:N
+        st.m[i] = exp(β * st.phi[i])
+        st.R += st.m[i]
+    end
+
+    if st.R <= 0.0 || !isfinite(st.R)
+        error("eKMC NPT: Total rate R is non-positive or non-finite after volume change: R = $(st.R)")
+    end
+
+    return nothing
+end
+
+"""
+    ekmc_volume_move_tan!(st::eKMCState, p::LJParams, Pext::Float64, max_dV::Float64)::Float64
+
+Perform a volume change move using Tan et al. auxiliary pressure method.
+This is rejection-free: the volume change is deterministic based on pressure comparison.
+
+Algorithm (Tan et al., CEJ 2017):
+- Compute current pressure p from virial
+- Define auxiliary pressure: p_aux = n * (p + Pext) where n is random
+- If p > p_aux: increase volume: V' = V + n * ΔV
+- If p < p_aux: decrease volume: V' = V - n * ΔV
+- All moves are accepted (rejection-free)
+
+Returns the residence time dt for this volume move.
+"""
+function ekmc_volume_move_tan!(st::eKMCState, p::LJParams, Pext::Float64, max_dV::Float64)
+    N = st.N
+    L_old = st.L
+    V_old = L_old * L_old * L_old
+    T = 1.0 / p.β
+
+    # Store rate BEFORE volume move (for residence time calculation)
+    R_before = st.R
+    if R_before <= 0.0 || !isfinite(R_before)
+        error("eKMC NPT: Total rate R must be positive and finite before volume move: R = $R_before")
+    end
+
+    # Compute current pressure from virial using optimized function (uses stored pair_u matrix)
+    # Note: This is called BEFORE volume change, so pair_u is still valid
+    p_current = pressure_from_pair_u(st, p, T)
+
+    # Tan et al. auxiliary pressure method
+    # p_aux = n * (p + p*), where n is random, p* is specified pressure, p is current pressure
+    n = rand(st.rng)  # Random number in [0, 1)
+    p_aux = n * (p_current + Pext)
+
+    # Determine volume change direction and magnitude
+    if p_current > p_aux
+        # Pressure too high, increase volume: V' = V + n * ΔV
+        dV = n * max_dV
+        V_new = V_old + dV
+    else
+        # Pressure too low, decrease volume: V' = V - n * ΔV
+        dV = -n * max_dV
+        V_new = V_old + dV
+    end
+
+    # Ensure volume is positive
+    if V_new <= 0.0
+        V_new = max(V_old * 0.5, 1e-10)  # Safety: don't collapse to zero
+    end
+
+    L_new = cbrt(V_new)
+    scale = L_new / L_old
+
+    # Scale all positions
+    @inbounds for i in 1:N
+        st.pos[1, i] *= scale
+        st.pos[2, i] *= scale
+        st.pos[3, i] *= scale
+    end
+
+    # Wrap all positions to [0, L_new)
+    scratch = st.scratch_dr
+    @inbounds for i in 1:N
+        scratch[1] = st.pos[1, i]
+        scratch[2] = st.pos[2, i]
+        scratch[3] = st.pos[3, i]
+        wrap!(scratch, L_new)
+        st.pos[1, i] = scratch[1]
+        st.pos[2, i] = scratch[2]
+        st.pos[3, i] = scratch[3]
+    end
+
+    # Update box length
+    st.L = L_new
+
+    # Rebuild pair energies, phi, mobilities, and total rate
+    rebuild_pair_phi_R_after_volume!(st, p)
+
+    # Volume moves are instantaneous - they don't have a separate residence time
+    # The configuration after the volume move will be weighted by subsequent particle moves
+    return nothing
+end
+
+"""
+    TimeWeightedAccumulator
+
+Accumulator for time-weighted averages in NPT ensemble.
+"""
+mutable struct TimeWeightedAccumulator
+    weighted_sum::Float64
+    weighted_sum_sq::Float64
+    total_time::Float64
+    total_time_sq::Float64
+    count::Int
+end
+
+TimeWeightedAccumulator() = TimeWeightedAccumulator(0.0, 0.0, 0.0, 0.0, 0)
+
+function Base.push!(acc::TimeWeightedAccumulator, x::Float64, dt::Float64)
+    acc.weighted_sum += x * dt
+    acc.weighted_sum_sq += x * x * dt
+    acc.total_time += dt
+    acc.total_time_sq += dt * dt
+    acc.count += 1
+    return acc
+end
+
+function mean(acc::TimeWeightedAccumulator)::Float64
+    return acc.total_time > 0.0 ? acc.weighted_sum / acc.total_time : NaN
+end
+
+function stderr(acc::TimeWeightedAccumulator)::Float64
+    if acc.total_time <= 0.0 || acc.count < 2
+        return NaN
+    end
+    μ = acc.weighted_sum / acc.total_time
+    var_pop = acc.weighted_sum_sq / acc.total_time - μ * μ
+    var_pop = max(var_pop, 0.0)
+    n_eff = (acc.total_time * acc.total_time) / max(acc.total_time_sq, eps(Float64))
+    return n_eff > 1.0 ? sqrt(var_pop / n_eff) : NaN
+end
+
+"""
+    NPTObservables
+
+Observables accumulated during NPT eKMC simulation.
+"""
+mutable struct NPTObservables
+    rho::TimeWeightedAccumulator
+    U_per_particle::TimeWeightedAccumulator
+    pressure::TimeWeightedAccumulator
+    mu_ex::Float64
+    mu_ex_err::Float64
+    vol_moves::Int
+end
+
+NPTObservables() = NPTObservables(
+    TimeWeightedAccumulator(),
+    TimeWeightedAccumulator(),
+    TimeWeightedAccumulator(),
+    NaN, NaN, 0
+)
+
+"""
+    run_ekmc_npt!(st::eKMCState, p::LJParams, acc_mu::ChemicalPotentialAccumulator;
+                  nsteps::Int=10000, Pext::Float64=1.0, max_dV::Float64=0.1,
+                  vol_move_every::Int=10, sample_every::Int=10,
+                  collect_timeseries::Bool=false)
+
+Run NPT eKMC simulation using Tan et al. method.
+
+Alternates between:
+1. Particle displacement moves (NVT eKMC steps)
+2. Volume change moves (Tan et al. auxiliary pressure method)
+
+Parameters:
+- nsteps: Total number of particle moves
+- Pext: External pressure
+- max_dV: Maximum volume change per move
+- vol_move_every: Perform volume move every N particle moves
+- sample_every: Sample observables every N events (particle or volume)
+- collect_timeseries: If true, return timeseries data
+
+Returns: (obs::NPTObservables, total_time::Float64, timeseries::Union{Nothing, Dict})
+"""
+function run_ekmc_npt!(st::eKMCState, p::LJParams, acc_mu::ChemicalPotentialAccumulator;
+                       nsteps::Int=10000, Pext::Float64=1.0, max_dV::Float64=0.1,
+                       vol_move_every::Int=10, sample_every::Int=10,
+                       collect_timeseries::Bool=false)
+    T = 1.0 / p.β
+    N = st.N
+
+    # Reset chemical potential accumulator
+    reset!(acc_mu)
+
+    # Initialize observables
+    obs = NPTObservables()
+    acc_mu_prod = NPTChemicalPotentialAccumulator()  # Use NPT-specific accumulator
+    total_time = 0.0
+
+    # Timeseries storage
+    timeseries = collect_timeseries ? Dict(
+        :event_idx => Int[],
+        :time => Float64[],
+        :rho => Float64[],
+        :U_per_particle => Float64[],
+        :pressure => Float64[],
+        :L => Float64[]
+    ) : nothing
+
+    event_idx = 0
+    particle_move_count = 0  # Track particle moves for volume move frequency
+
+    for step_idx in 1:nsteps
+        # Every step: compute dt from current state
+        R_current = st.R
+        if R_current <= 0.0 || !isfinite(R_current)
+            error("eKMC NPT: Total rate R must be positive and finite: R = $R_current")
+        end
+        
+        u = rand(st.rng)
+        u = max(eps(Float64), min(u, 1.0 - eps(Float64)))
+        dt = log(1/u) / R_current
+        
+        # Check if this is a sampling step
+        do_sample = (event_idx % sample_every == 0)
+        
+        # Only accumulate dt and observables when sampling
+        if do_sample && dt > 0.0
+            # Sample observables from current state using optimized functions
+            # (use stored pair_u matrix instead of recomputing distances)
+            U = total_energy_from_pair_u(st, p)
+            P = pressure_from_pair_u(st, p, T)
+            ρ_inst = N / (st.L * st.L * st.L)
+            V = st.L * st.L * st.L
+            
+            # Weight observables by dt from this sampled state
+            push!(obs.U_per_particle, U / N, dt)
+            push!(obs.pressure, P, dt)
+            push!(obs.rho, ρ_inst, dt)
+            
+            # For NPT, accumulate (R/N)/V and V separately (Equation A.132)
+            R_over_N = R_current / N
+            push!(acc_mu_prod, R_over_N, V, dt)
+            
+            if collect_timeseries
+                push!(timeseries[:event_idx], event_idx)
+                push!(timeseries[:time], total_time + dt)
+                push!(timeseries[:rho], ρ_inst)
+                push!(timeseries[:U_per_particle], U / N)
+                push!(timeseries[:pressure], P)
+                push!(timeseries[:L], st.L)
+            end
+        end
+        
+        # Always update accumulator and perform move (even if not sampling)
+        acc_mu.t_total += dt
+        R_over_N = R_current / N
+        acc_mu.S += R_over_N * dt
+        acc_mu.S_sq += (R_over_N * R_over_N) * dt
+        acc_mu.t_total_sq += dt * dt
+        acc_mu.count += 1
+        
+        # Perform the move to next state
+        i = sample_particle_by_mobility(st)
+        oldx = st.pos[1, i]
+        oldy = st.pos[2, i]
+        oldz = st.pos[3, i]
+        st.pos[1, i] = rand(st.rng) * st.L
+        st.pos[2, i] = rand(st.rng) * st.L
+        st.pos[3, i] = rand(st.rng) * st.L
+        update_phi_after_move!(i, oldx, oldy, oldz, st, p)
+        
+        total_time += dt
+        event_idx += 1
+        particle_move_count += 1
+
+        # Volume change move every vol_move_every * N particle moves
+        # (matching MC frequency: vol_move_every sweeps, where 1 sweep = N moves)
+        if particle_move_count % (vol_move_every * N) == 0
+            # Store rate BEFORE volume move (for accumulator update)
+            R_before_vol = st.R
+            
+            do_sample_vol = (event_idx % sample_every == 0)
+            if do_sample_vol
+                U_vol = total_energy_from_pair_u(st, p)
+                P_vol = pressure_from_pair_u(st, p, T)
+                ρ_vol = N / (st.L * st.L * st.L)
+            end
+
+            # Perform volume move (deterministic, instantaneous - no separate residence time)
+            # Volume moves are instantaneous transitions - they don't contribute separate dt
+            # The configuration AFTER the volume move will be weighted by subsequent particle moves' dt
+            ekmc_volume_move_tan!(st, p, Pext, max_dV)
+            obs.vol_moves += 1
+            # Volume moves don't increment event_idx or add to time - they're instantaneous
+        end
+    end
+
+    # Compute chemical potential using NPT formula (Equation A.132)
+    obs.mu_ex = mu_ex_npt(acc_mu_prod, T)
+    obs.mu_ex_err = mu_ex_npt_stderr(acc_mu_prod, T)
+
+    return (obs, total_time, timeseries)
 end

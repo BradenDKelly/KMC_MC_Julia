@@ -16,6 +16,7 @@ module MolSim
         include("MC/Molecules.jl")
         include("MC/Fluctuations.jl")
     include("MC/eKMC.jl")
+        include("MC/MD.jl")
         include("MC/validation/CompareNVT.jl")
     end
 

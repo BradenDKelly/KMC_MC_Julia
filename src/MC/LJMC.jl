@@ -322,6 +322,129 @@ function init_fcc(; N::Int=864, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5
 end
 
 """
+    init_simple(; N::Int=108, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
+                max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false,
+                lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false,
+                types::Union{Vector{Int}, Nothing}=nothing)
+
+Initialize a simple cubic grid (or random positions) at density ρ for any N.
+Returns (params::LJParams, st::LJState).
+
+Works for any N (not restricted to perfect cubes).
+"""
+function init_simple(; N::Int=108, ρ::Float64=0.8, T::Float64=1.0, rc::Float64=2.5,
+                     max_disp::Float64=0.1, seed::Int=1234, use_lrc::Bool=false,
+                     lj_model::Symbol=:truncated, apply_impulsive_correction::Bool=false,
+                     types::Union{Vector{Int}, Nothing}=nothing)
+    # Validate lj_model
+    if lj_model != :truncated && lj_model != :shifted
+        throw(ArgumentError("lj_model must be :truncated or :shifted, got :$lj_model"))
+    end
+    
+    # Compute box length from density
+    V = N / ρ
+    L = cbrt(V)
+    
+    # Allocate positions (3 x N)
+    pos = zeros(Float64, 3, N)
+    
+    # Try to place particles in a simple cubic grid
+    # Find the largest cube that fits N particles
+    n_per_side = round(Int, cbrt(N))
+    n_grid = n_per_side * n_per_side * n_per_side
+    
+    rng = Xoshiro(seed)
+    
+    if n_grid <= N
+        # Use grid for first n_grid particles, random for the rest
+        spacing = L / n_per_side
+        idx = 1
+        
+        # Place particles on grid
+        @inbounds for k in 0:(n_per_side-1)
+            for j in 0:(n_per_side-1)
+                for i in 0:(n_per_side-1)
+                    if idx <= N
+                        pos[1, idx] = (i + 0.5) * spacing
+                        pos[2, idx] = (j + 0.5) * spacing
+                        pos[3, idx] = (k + 0.5) * spacing
+                        idx += 1
+                    end
+                end
+            end
+        end
+        
+        # Place remaining particles randomly
+        for i in idx:N
+            pos[1, i] = rand(rng) * L
+            pos[2, i] = rand(rng) * L
+            pos[3, i] = rand(rng) * L
+        end
+    else
+        # Just place all particles randomly
+        for i in 1:N
+            pos[1, i] = rand(rng) * L
+            pos[2, i] = rand(rng) * L
+            pos[3, i] = rand(rng) * L
+        end
+    end
+    
+    # Wrap all positions to [0, L)
+    scratch = MVector{3,Float64}(0.0, 0.0, 0.0)
+    @inbounds for i in 1:N
+        scratch[1] = pos[1, i]
+        scratch[2] = pos[2, i]
+        scratch[3] = pos[3, i]
+        wrap!(scratch, L)
+        pos[1, i] = scratch[1]
+        pos[2, i] = scratch[2]
+        pos[3, i] = scratch[3]
+    end
+    
+    # Compute long-range corrections if requested
+    lrc_u_per_particle = 0.0
+    lrc_p = 0.0
+    if use_lrc
+        lrc_u_per_particle = compute_lrc_energy_per_particle(ρ, rc)
+        lrc_p = compute_lrc_pressure(ρ, rc)
+    end
+    
+    # Compute u(rc) for shifted potential (even if not using it, for consistency)
+    # u(rc) = 4ε[(σ/rc)^12 - (σ/rc)^6], with σ=ε=1
+    inv_rc2 = 1.0 / (rc * rc)
+    inv_rc6 = inv_rc2 * inv_rc2 * inv_rc2
+    inv_rc12 = inv_rc6 * inv_rc6
+    u_rc = 4.0 * (inv_rc12 - inv_rc6)  # σ=ε=1
+    
+    # Default to single type (backward compatibility)
+    if types === nothing
+        types = fill(1, N)  # All particles are type 1
+    else
+        @assert length(types) == N "types must have length N"
+        n_types_used = maximum(types)
+        @assert minimum(types) >= 1 "type IDs must be >= 1"
+        # Note: Will create parameters with enough types
+    end
+    
+    # Create parameters (single-component by default, unless types provided)
+    # For now, use single-component default (backward compatibility)
+    params = LJParams(1.0, 1.0, rc, rc*rc, 1.0/T, max_disp, use_lrc, lrc_u_per_particle, lrc_p,
+                      lj_model, apply_impulsive_correction, u_rc)
+    
+    # Create cell list
+    cl = CellList(N, L, rc)
+    
+    # Initialize state (with types)
+    scratch_dr = MVector{3,Float64}(0.0, 0.0, 0.0)
+    st = LJState(N, L, pos, copy(types), rng, cl, scratch_dr, 0, 0)
+    
+    # Rebuild cell list
+    rebuild_cells!(st)
+    
+    return (params, st)
+end
+
+"""
     local_energy(i::Int, st::LJState, p::LJParams)::Float64
 
 Compute the local energy for particle i (sum over neighbors within rc).
@@ -403,14 +526,94 @@ function local_energy(i::Int, st::LJState, p::LJParams)::Float64
 end
 
 """
-    mc_trial!(st::LJState, p::LJParams)::Bool
+    AdaptiveAcceptanceParams
+
+Mutable structure to hold adaptive acceptance tuning parameters.
+"""
+mutable struct AdaptiveAcceptanceParams
+    max_disp::Float64      # Current max displacement (can be adjusted)
+    max_dlnV::Float64      # Current max volume change (can be adjusted)
+    target_acceptance::Float64  # Target acceptance rate (default 0.45)
+    adjust_every::Int      # Adjust parameters every N sweeps/moves
+    particle_accepted::Int
+    particle_attempted::Int
+    volume_accepted::Int
+    volume_attempted::Int
+end
+
+function AdaptiveAcceptanceParams(;
+    max_disp::Float64=0.1,
+    max_dlnV::Float64=0.01,
+    target_acceptance::Float64=0.45,
+    adjust_every::Int=50
+)
+    return AdaptiveAcceptanceParams(
+        max_disp, max_dlnV, target_acceptance, adjust_every,
+        0, 0, 0, 0
+    )
+end
+
+"""
+    reset!(acc::AdaptiveAcceptanceParams)
+
+Reset acceptance counters.
+"""
+function reset!(acc::AdaptiveAcceptanceParams)
+    acc.particle_accepted = 0
+    acc.particle_attempted = 0
+    acc.volume_accepted = 0
+    acc.volume_attempted = 0
+    return nothing
+end
+
+"""
+    adjust_parameters!(acc::AdaptiveAcceptanceParams; min_factor::Float64=0.1, max_factor::Float64=2.0)
+
+Adjust max_disp and max_dlnV based on current acceptance rates to target ~45%.
+"""
+function adjust_parameters!(acc::AdaptiveAcceptanceParams; min_factor::Float64=0.1, max_factor::Float64=2.0)
+    target = acc.target_acceptance
+    
+    # Adjust max_disp based on particle acceptance
+    if acc.particle_attempted > 0
+        particle_acc = Float64(acc.particle_accepted) / Float64(acc.particle_attempted)
+        if particle_acc > 0.0
+            # If acceptance is too high, increase max_disp; if too low, decrease it
+            # When acc > target: factor > 1 (increase max_disp)
+            # When acc < target: factor < 1 (decrease max_disp)
+            # When acc = target: factor = 1 (no change)
+            factor = particle_acc / target
+            # Clamp factor to prevent extreme changes
+            factor = max(min_factor, min(max_factor, factor))
+            acc.max_disp *= factor
+        end
+        # If acceptance is 0, don't adjust (might be initial state or bad starting point)
+    end
+    
+    # Adjust max_dlnV based on volume acceptance
+    if acc.volume_attempted > 0
+        volume_acc = Float64(acc.volume_accepted) / Float64(acc.volume_attempted)
+        if volume_acc > 0.0
+            factor = volume_acc / target
+            factor = max(min_factor, min(max_factor, factor))
+            acc.max_dlnV *= factor
+        end
+    end
+    
+    # Reset counters after adjustment
+    reset!(acc)
+    return nothing
+end
+
+"""
+    mc_trial!(st::LJState, p::LJParams; max_disp_override::Float64=-1.0)
 
 Perform one Monte Carlo trial move.
 Does NOT modify cell list. Assumes cell list will be rebuilt periodically in sweep!.
 Returns true if accepted, false if rejected.
 Must be allocation-free.
 """
-function mc_trial!(st::LJState, p::LJParams)::Bool
+function mc_trial!(st::LJState, p::LJParams; max_disp_override::Float64=-1.0)::Bool
     N = st.N
     L = st.L
     pos = st.pos
@@ -426,10 +629,13 @@ function mc_trial!(st::LJState, p::LJParams)::Bool
     # Compute old local energy
     Eold = local_energy(i, st, p)
     
+    # Use override if provided, otherwise use p.max_disp
+    max_disp = max_disp_override > 0.0 ? max_disp_override : p.max_disp
+    
     # Generate trial displacement (cube of size max_disp)
-    dx = (rand(st.rng) - 0.5) * 2.0 * p.max_disp
-    dy = (rand(st.rng) - 0.5) * 2.0 * p.max_disp
-    dz = (rand(st.rng) - 0.5) * 2.0 * p.max_disp
+    dx = (rand(st.rng) - 0.5) * 2.0 * max_disp
+    dy = (rand(st.rng) - 0.5) * 2.0 * max_disp
+    dz = (rand(st.rng) - 0.5) * 2.0 * max_disp
     
     # Apply trial move
     @inbounds begin
@@ -473,16 +679,24 @@ function mc_trial!(st::LJState, p::LJParams)::Bool
 end
 
 """
-    sweep!(st::LJState, p::LJParams; rebuild_every::Int=-1)::Float64
+    sweep!(st::LJState, p::LJParams; rebuild_every::Int=-1, max_disp_override::Float64=-1.0, 
+          acc_params::Union{AdaptiveAcceptanceParams, Nothing}=nothing)::Float64
 
 Perform N trial moves (one sweep).
 Returns acceptance ratio for that sweep.
 Rebuilds cell list at start and every rebuild_every trials (default: rebuild_every = st.N, i.e. once per sweep).
 Keep allocation-free inside the per-trial loop.
+
+If acc_params is provided, tracks acceptance and can adjust max_disp adaptively.
 """
-function sweep!(st::LJState, p::LJParams; rebuild_every::Int=-1)::Float64
+function sweep!(st::LJState, p::LJParams; rebuild_every::Int=-1, max_disp_override::Float64=-1.0,
+                acc_params::Union{AdaptiveAcceptanceParams, Nothing}=nothing)::Float64
     N = st.N
     n_accepted = 0
+    
+    # Use adaptive max_disp if provided
+    current_max_disp = max_disp_override > 0.0 ? max_disp_override : 
+                       (acc_params !== nothing ? acc_params.max_disp : p.max_disp)
     
     # Default: rebuild once per sweep (rebuild_every = N)
     if rebuild_every == -1
@@ -493,12 +707,20 @@ function sweep!(st::LJState, p::LJParams; rebuild_every::Int=-1)::Float64
     rebuild_cells!(st)
     
     @inbounds for trial in 1:N
-        accepted = mc_trial!(st, p)
+        accepted = mc_trial!(st, p; max_disp_override=current_max_disp)
         if accepted
             n_accepted += 1
             st.accepted += 1
         end
         st.attempted += 1
+        
+        # Track acceptance for adaptive tuning
+        if acc_params !== nothing
+            if accepted
+                acc_params.particle_accepted += 1
+            end
+            acc_params.particle_attempted += 1
+        end
         
         # Rebuild cells periodically if requested
         if trial % rebuild_every == 0 && trial < N
@@ -590,11 +812,14 @@ end
 
 """
     run_npt!(st::LJState, p::LJParams; nsweeps::Int=1000, Pext::Float64=1.0,
-             max_disp::Float64=-1.0, max_dlnV::Float64=0.01, vol_move_every::Int=10)
+             max_disp::Float64=-1.0, max_dlnV::Float64=0.01, vol_move_every::Int=10,
+             adaptive::Bool=true, target_acceptance::Float64=0.45, adjust_every::Int=50)
 
 Run NPT Monte Carlo simulation.
 Runs NVT sweeps and attempts one volume move every vol_move_every sweeps.
 Returns (particle_acceptance, volume_acceptance, densities, energies).
+
+If adaptive=true, adjusts max_disp and max_dlnV to maintain target_acceptance (default 0.45).
 """
 function run_npt!(
     st::LJState,
@@ -603,13 +828,24 @@ function run_npt!(
     Pext::Float64=1.0,
     max_disp::Float64=-1.0,
     max_dlnV::Float64=0.01,
-    vol_move_every::Int=10
+    vol_move_every::Int=10,
+    adaptive::Bool=true,
+    target_acceptance::Float64=0.45,
+    adjust_every::Int=50
 )
     if max_disp < 0.0
         max_disp = p.max_disp
     end
     
-    # Track acceptance
+    # Initialize adaptive parameters if requested
+    acc_params = adaptive ? AdaptiveAcceptanceParams(
+        max_disp=max_disp,
+        max_dlnV=max_dlnV,
+        target_acceptance=target_acceptance,
+        adjust_every=adjust_every
+    ) : nothing
+    
+    # Track acceptance (for return value)
     particle_accepted = 0
     particle_attempted = 0
     volume_accepted = 0
@@ -621,24 +857,39 @@ function run_npt!(
     N = st.N
     
     for sweep_idx in 1:nsweeps
+        # Use adaptive max_disp if enabled
+        current_max_disp = acc_params !== nothing ? acc_params.max_disp : max_disp
+        
         # NVT sweep
-        sweep_acc = sweep!(st, p)
+        sweep_acc = sweep!(st, p; max_disp_override=current_max_disp, acc_params=acc_params)
         particle_accepted += Int(round(sweep_acc * N))
         particle_attempted += N
         
         # Volume move every vol_move_every sweeps
         if sweep_idx % vol_move_every == 0
-            vol_acc = volume_trial!(st, p; max_dlnV=max_dlnV, Pext=Pext)
+            current_max_dlnV = acc_params !== nothing ? acc_params.max_dlnV : max_dlnV
+            vol_acc = volume_trial!(st, p; max_dlnV=current_max_dlnV, Pext=Pext)
             if vol_acc
                 volume_accepted += 1
+                if acc_params !== nothing
+                    acc_params.volume_accepted += 1
+                end
             end
             volume_attempted += 1
+            if acc_params !== nothing
+                acc_params.volume_attempted += 1
+            end
             
             # Sample observables after volume move
             ρ = N / (st.L * st.L * st.L)
             E = total_energy(st, p)
             push!(densities, ρ)
             push!(energies, E)
+        end
+        
+        # Adjust parameters adaptively if enabled
+        if acc_params !== nothing && sweep_idx % adjust_every == 0 && sweep_idx > 0
+            adjust_parameters!(acc_params)
         end
     end
     
