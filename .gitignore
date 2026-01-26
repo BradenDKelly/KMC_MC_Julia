@@ -1,2 +1,4 @@
 # Analysis output directory
 dev/out/
+_tmp_*
+nvt_validation.csv
